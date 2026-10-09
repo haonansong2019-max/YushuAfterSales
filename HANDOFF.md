@@ -77,7 +77,7 @@
 - 用户已确认开始实现；本条设计树原“待确认/尚未开始”状态由当前实现阶段覆盖。
 - GitHub 候选调研见 `docs/github-reference-projects.md`；只复用许可兼容的清单/检测/UI 编排思路。
 - 客户端授权 API 的真实响应字段、签名密钥与续期协议尚未从服务端得到确认；未配置独立 ysrepair HTTPS 地址时 fail-closed，在线流程不得据猜测宣称已验证。
-- GitHub 仓库地址/归属及 CI 实跑凭据尚未提供；当前工程目录也不是 Git 工作树。用户要求 GitHub 跑通，交付前需补仓库地址和登录授权。
+- GitHub 仓库已创建并推送：`https://github.com/haonansong2019-max/YushuAfterSales`，默认分支 `main`，本地提交 `363a2705fd5c0b9acfac7c68e63f3c2dc4f1abfa`。GitHub Actions `Windows CI` 运行 `37882898596` 已成功，构建产物 `YushuAfterSales-portable` 已上传。
 - VPS 凭据只存在于用户文档，不复制到源码、报告、命令输出或日志；仅能在目标主机与 ysrepair 独立路由明确后核验部署契约。稳定升级清单和发行物仍须用户明确“定稿并推送”。
 - WinGet 上游清单不是本产品固定的下载哈希/发布者策略；在线稳定前，自动安装暂时关闭，保留只读检测和用户主动打开的官方来源。
 - 授权回执须带 request_id 并以固定公钥验证 RSA-SHA256；公钥不能取自同一份可编辑配置。当前没有已部署服务公钥，因此在线授权继续 fail-closed。

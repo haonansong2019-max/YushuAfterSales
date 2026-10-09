@@ -43,5 +43,7 @@
 ## 当前状态
 
 - 设计树第一轮已确认。
-- 尚未开始业务代码、构建或发布。
-- 下一轮需确认：组件目录、修复权限、离线包、回滚/还原点、报告字段和发布形态。
+- 首版业务代码、报告引擎、授权 fail-closed、在线升级校验、便携打包和 Windows CI 已实现。
+- GitHub 仓库：`https://github.com/haonansong2019-max/YushuAfterSales`；默认分支为 `main`。
+- GitHub Actions `Windows CI` 已于 2026-10-09 运行成功，包含主程序构建、SelfTest、授权 SelfTest 和便携包上传。
+- 在线授权服务地址、公钥和替换升级器仍需运维配置；未配置时扫描和报告可用，修复、安装和升级保持禁用。
