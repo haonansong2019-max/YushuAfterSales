@@ -82,6 +82,16 @@
 - WinGet 上游清单不是本产品固定的下载哈希/发布者策略；在线稳定前，自动安装暂时关闭，保留只读检测和用户主动打开的官方来源。
 - 授权回执须带 request_id 并以固定公钥验证 RSA-SHA256；公钥不能取自同一份可编辑配置。当前没有已部署服务公钥，因此在线授权继续 fail-closed。
 
+## 2026-10-09 录屏需求实现候选
+
+- 按录屏实现逐项可见扫描、缺失/异常状态、软件内确认计划、官方包下载、SHA-256/Authenticode 二次校验、UAC 安装和安装后重扫；DirectX 外包解压后实际运行 DXSETUP，不把打开网页当修复。
+- 核心页面为运行库、DirectX、DLL；新增游戏组件和 Windows Update 驱动检测/安装页。驱动仅使用 Windows Update 匹配项，服务禁用时显示原因并提供受授权的启用/重查计划。
+- 正式版 `bin/Release/net48/YushuAfterSales.exe` SHA-256：`6B0F35D0C4FAF12AEFFD93E897284A148150987191900A5C58B0A77B7F884F1E`。
+- 便携候选 `artifacts/YushuAfterSales-portable-20261009-1955.zip` SHA-256：`ADB3084625F6C7037BCC01BABB252B409E0FA8925C967CA7B6BF5FA7B093771F`。
+- 未加密功能测试候选通过 `FunctionalTestBuild=true` 单独编译，EXE SHA-256：`1EB8A96DFE008E66487B9BB1640DEFB4A8C269DB7054D92A75366F0D07802604`；仅用于本地安装流程验收，不作为正式发行物。
+- UI 验收证据：`E:\codexxxx\work\ysrepair-video-20261009\validation\ui-release-final`，`UI_ACCEPTANCE_FAILURES=0`；功能烟测证据：`...\validation\ui-functional2`，失败数为 0。未执行真实安装、驱动安装、Windows Update 服务修改或 UAC。
+- `SelfTest`、`AuthorizationSelfTest`、`RepairSelfTest --official-cache E:\codexxxx\work\ysrepair-package-verification` 均通过；RepairSelfTest 221 项，无安装器执行。
+
 ## 2026-10-09 核心三模块补充
 
 - 运行库页：扫描后展示 VC++/.NET 检测结果和 VC++ 官方目录项，支持逐项勾选、架构、状态和 evidenceId；主操作先生成修复预览，不自动下载安装。

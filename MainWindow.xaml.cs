@@ -1,9 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -21,6 +24,7 @@ namespace YushuAfterSales
             { "runtime", "运行库修复" },
             { "directx", "DirectX 修复" },
             { "dll", "DLL 修复" },
+            { "drivers", "驱动安装" },
             { "system", "系统修复" },
             { "components", "游戏组件" },
             { "reports", "诊断报告" },
@@ -36,14 +40,44 @@ namespace YushuAfterSales
         private bool _isEnglish;
         private string _theme = "dark";
         private bool _systemActionRunning;
+        private bool _scanRunning;
+        private bool _repairRunning;
+        private CancellationTokenSource _operationCancellation;
+        private readonly ObservableCollection<InventoryRow> _inventoryRows = new ObservableCollection<InventoryRow>();
+        private List<InventoryEntry> _pendingRepair;
+        private string _lastRepairSummary;
+        private bool _driverScanComplete;
+        private bool _pendingEnableUpdateService;
+        private bool IsBusy { get { return _scanRunning || _repairRunning || _systemActionRunning; } }
 
         public MainWindow()
         {
             InitializeComponent();
+            SizeChanged += MainWindow_SizeChanged;
+#if FUNCTIONAL_TEST_BUILD
+            Title = "钰叔售后 · 未加密功能测试版";
+            OperationStatus.Text = "未加密功能测试版：用于本地验收；安装前仍校验官方包并触发 UAC。";
+#endif
+            Closing += (sender, e) =>
+            {
+                if (_repairRunning || _systemActionRunning)
+                {
+                    e.Cancel = true;
+                    OperationStatus.Text = Localize("正在执行修复，请等待当前安装结束后关闭。", "Wait for the current repair to finish before closing.");
+                }
+                else if (_operationCancellation != null) _operationCancellation.Cancel();
+            };
             _authorization = AuthorizationService.Load();
             LoadPreferences();
             _reportHistory.AddRange(ReportHistoryStore.LoadRecent(100));
             ShowPage("overview");
+        }
+
+        private void MainWindow_SizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            if (OverviewPage == null) return;
+            bool compact = ActualWidth < 800 || ActualHeight < 560;
+            OverviewPage.Margin = compact ? new Thickness(16) : new Thickness(24);
         }
 
         private void BrandButton_Click(object sender, RoutedEventArgs e)
@@ -66,6 +100,7 @@ namespace YushuAfterSales
             }
 
             var title = Localize(_pageTitles[key], EnglishPageTitle(key));
+            if (_currentPageKey != key) DismissRepairButton_Click(null, null);
             _currentPageKey = key;
             ToolbarTitle.Text = title;
             ToolbarStatus.Text = key == "overview" ? Localize("准备就绪", "Ready") : GetPageStatus(key);
@@ -74,16 +109,20 @@ namespace YushuAfterSales
             ExportReportButton.Visibility = key == "overview" && _currentReport != null ? Visibility.Visible : Visibility.Collapsed;
             ExportModuleReportButton.Visibility = (key == "reports" && _reportHistory.Count > 0) || (key != "overview" && key != "reports" && _currentReport != null) ? Visibility.Visible : Visibility.Collapsed;
             OpenReportFolderButton.Visibility = key == "reports" ? Visibility.Visible : Visibility.Collapsed;
-            OpenSourceListButton.Visibility = key == "runtime" || key == "directx" || key == "dll" || key == "components" ? Visibility.Visible : Visibility.Collapsed;
-            ModuleSelectButton.Visibility = key == "runtime" || key == "directx" || key == "dll" ? Visibility.Visible : Visibility.Collapsed;
-            ModulePrimaryButton.Visibility = key == "runtime" || key == "directx" || key == "dll" || key == "system" || key == "license" || key == "updates" || key == "reports" ? Visibility.Visible : Visibility.Collapsed;
-            ModulePrimaryButton.Content = key == "runtime" || key == "directx" || key == "dll" ? Localize("预览所选修复", "Preview selected repair") : key == "system" ? Localize("执行所选系统修复", "Run selected system repair") : key == "license" ? Localize("在线刷新授权", "Refresh license online") : Localize("检查并下载更新", "Check and download update");
+            OpenSourceListButton.Visibility = Visibility.Collapsed;
+            ModuleSelectButton.Visibility = IsCorePage(key) ? Visibility.Visible : Visibility.Collapsed;
+            ModulePrimaryButton.Visibility = IsCorePage(key) || key == "system" || key == "license" || key == "updates" || key == "reports" ? Visibility.Visible : Visibility.Collapsed;
+            ModulePrimaryButton.Content = IsCorePage(key) ? Localize("立即修复所选", "Repair selected") : key == "system" ? Localize("执行所选系统修复", "Run selected system repair") : key == "license" ? Localize("在线刷新授权", "Refresh license online") : Localize("检查并下载更新", "Check and download update");
             if (key == "reports") ModulePrimaryButton.Content = Localize("导出所选报告", "Export selected report");
             ModulePrimaryButton.IsEnabled = key == "runtime" || key == "directx" || key == "dll" || key == "license" || key == "updates" || (key == "system" && _authorization != null && _authorization.CanRepair);
             if (key == "reports") ModulePrimaryButton.IsEnabled = _reportHistory.Count > 0;
             if (key == "license" && (_authorization == null || !_authorization.CanRepair)) ModulePrimaryButton.Content = Localize("刷新授权状态", "Refresh license status");
-            if (key == "system" && _systemActionRunning) ModulePrimaryButton.IsEnabled = false;
-            ModulePrimaryButton.ToolTip = key == "runtime" || key == "directx" || key == "dll" ? Localize("先查看修复预览；当前版本不会直接覆盖未知 DLL。", "Review the repair preview first; this build never overwrites unknown DLLs directly.") : null;
+            if (IsBusy) ModulePrimaryButton.IsEnabled = false;
+            ModuleScanButton.Visibility = IsCorePage(key) || key == "system" ? Visibility.Visible : Visibility.Collapsed;
+            ModuleScanButton.Content = _currentReport == null ? Localize("开始扫描", "Start scan") : Localize("重新扫描", "Scan again");
+            RowRepairColumn.Visibility = IsCorePage(key) ? Visibility.Visible : Visibility.Collapsed;
+            EnableUpdateServiceButton.Visibility = key == "drivers" && _inventoryRows.Any(x => x.Entry.Category == "driver" && x.Entry.ComponentId.Contains("wu-query-error")) ? Visibility.Visible : Visibility.Collapsed;
+            ModulePrimaryButton.ToolTip = IsCorePage(key) ? Localize("确认后下载并校验官方安装包，执行修复并重新扫描。", "Confirm, download and verify official installers, repair, then scan again.") : null;
             foreach (ComboBoxItem item in SystemActionCombo.Items)
             {
                 if (item.Content != null && item.Content.ToString().Contains(".NET"))
@@ -101,6 +140,7 @@ namespace YushuAfterSales
                 UpdateSelectionSummary();
             }
             AuthorizationActivationPanel.Visibility = key == "license" ? Visibility.Visible : Visibility.Collapsed;
+            UpdateBusyControls();
         }
 
         private string GetPageStatus(string key)
@@ -123,8 +163,7 @@ namespace YushuAfterSales
             if (_currentReport == null) return Localize("扫描后这里会显示可追溯的证据 ID 和状态。", "Traceable evidence IDs and status will appear here after a scan.");
             if (key == "runtime" || key == "directx" || key == "dll")
             {
-                int missing = _currentReport.Inventory.Count(x => x.Status == "missing" || x.Status == "missing-or-unknown" || x.Status == "unknown");
-                return Localize("证据：", "Evidence: ") + _currentReport.ReportId + Localize("；待复核项目：", "; items to review: ") + missing + Localize("；来源和哈希会在安装前再次校验。", "; sources and hashes are checked again before installation.");
+                return Localize("报告 ID：", "Report ID: ") + _currentReport.ReportId;
             }
             return Localize("证据索引：", "Evidence index: ") + _currentReport.ReportId + Localize("；导出后可按 evidenceId 关联 actions.jsonl 和 logs。", "; export links evidenceId to actions.jsonl and logs.");
         }
@@ -133,11 +172,12 @@ namespace YushuAfterSales
         {
             switch (key)
             {
-                case "runtime": return Localize("查看本机运行库证据，选择项目后可打开厂商官方来源；自动安装在配置受信安装策略前关闭。", "Review runtime evidence and open vendor sources. Automatic installation stays disabled until a trusted install policy is configured.");
-                case "directx": return Localize("查看 DirectX legacy 组件证据并打开 Microsoft 官方来源；不替换 Windows DirectX 系统版本。", "Review legacy DirectX evidence and open Microsoft sources. Windows system DirectX is not replaced.");
+                case "runtime": return Localize("逐项检测 VC++、.NET 和 UCRT；缺失或异常项可在此下载官方包并修复。", "Scan VC++, .NET and UCRT individually; download official packages here to repair missing or abnormal items.");
+                case "directx": return Localize("逐项检测 DirectX 游戏组件；使用 Microsoft June 2010 安装包补齐缺失组件。", "Scan DirectX game components individually; repair with Microsoft's June 2010 installer.");
                 case "dll": return Localize("按明确的 DLL 名称检查目标程序目录和系统组件证据；只把缺失项映射到受信官方组件，禁止从随机 DLL 网站下载或覆盖文件。", "Check explicit DLL evidence in the target and system component locations; map confirmed issues to trusted vendor packages only. Random DLL downloads and file replacement are prohibited.");
+                case "drivers": return Localize("检测设备驱动问题，并查询 Windows Update 提供的匹配驱动；找到适配包后可直接下载安装。查询需要联网。", "Check device driver issues and matching drivers from Windows Update; download and install available matches here. An internet connection is required.");
                 case "system": return Localize("通过 UAC 调用 SFC、DISM 或 Windows .NET 3.5 可选功能；执行前尝试创建还原点。", "Run SFC, DISM, or the Windows .NET 3.5 feature through UAC. A restore point is attempted first.");
-                case "components": return Localize("OpenAL、MSXML、Java 与游戏平台只显示官方来源和兼容性信息。", "OpenAL, MSXML, Java, and game platforms show official sources and compatibility information only.");
+                case "components": return Localize("逐项检测游戏组件；有受信安装包的缺失项提供下载安装，系统组件通过 Windows 修复。", "Scan game components individually; trusted packages can be downloaded and installed, while system components use Windows repair.");
                 case "reports": return Localize("浏览本机保存的扫描历史；导出时生成脱敏 JSON、动作记录、日志索引和 SHA-256 清单。", "Browse local scan history. Exports include redacted JSON, action records, a log index, and SHA-256 manifest.");
                 case "license": return Localize("AppID：ysrepair；服务未配置或回执签名无效时，修复保持禁用。", "AppID: ysrepair. Repairs remain disabled when the service is unconfigured or its reply signature is invalid.");
                 case "updates": return Localize("从产品专用 HTTPS 清单检查版本，下载后校验 SHA-256；清单未配置时会明确失败。", "Check versions from the product HTTPS manifest and verify SHA-256 after download. An unconfigured manifest fails closed.");
@@ -146,35 +186,250 @@ namespace YushuAfterSales
             }
         }
 
-        private void ScanButton_Click(object sender, RoutedEventArgs e)
+        private async void ScanButton_Click(object sender, RoutedEventArgs e)
         {
+            if (IsBusy) return;
+            if (_currentPageKey == "drivers") { await RunDriverScanAsync(); return; }
+            await RunScanAsync(null);
+        }
+
+        private async Task RunScanAsync(ReportDocument repairedReport)
+        {
+            _scanRunning = true;
+            _operationCancellation = new CancellationTokenSource();
+            _currentReport = null;
+            _inventoryRows.Clear();
+            FindingsGrid.ItemsSource = _inventoryRows;
+            DismissRepairButton_Click(null, null);
+            ShowPage(_currentPageKey);
+            OperationProgress.Visibility = Visibility.Visible;
+            OperationProgress.IsIndeterminate = false;
+            OperationProgress.Value = 0;
+            OverviewStatus.Text = Localize("正在逐项扫描…", "Scanning components…");
+            if (repairedReport == null) _diagnosticLogs.Clear();
             try
             {
-                Cursor = System.Windows.Input.Cursors.Wait;
-                _diagnosticLogs.Clear();
-                _currentReport = WindowsRepairService.Scan(GetApplicationVersion());
+                Action<ComponentScanProgress> progress = p => Dispatcher.Invoke(new Action(() =>
+                {
+                    if (!_scanRunning) return;
+                    OperationProgress.Value = p.Total > 0 ? 100.0 * p.Current / p.Total : 0;
+                    OperationStatus.Text = Localize("扫描 ", "Scanning ") + p.Current + "/" + p.Total + " · " + p.DisplayName;
+                    ToolbarStatus.Text = Localize("扫描中", "Scanning");
+                    if (p.Entry != null && p.Stage == "complete")
+                    {
+                        InventoryRow row = ToInventoryRow(p.Entry);
+                        _inventoryRows.Add(row);
+                        if (_currentPageKey != "overview") ModuleGrid.ItemsSource = GetModuleItems(_currentPageKey);
+                        PlaceholderStatus.Text = OperationStatus.Text;
+                        OverviewStatus.Text = OperationStatus.Text;
+                    }
+                }), System.Windows.Threading.DispatcherPriority.Background);
+                CancellationToken token = _operationCancellation.Token;
+                _currentReport = await Task.Run(() => ComponentScanService.Scan(GetApplicationVersion(), progress, token), token);
                 _currentReport.Authorization = ToAuthorizationSummary(_authorization);
+                if (repairedReport != null) _currentReport.Actions.AddRange(repairedReport.Actions);
                 _reportHistory.Insert(0, _currentReport);
                 ReportHistoryStore.Save(_currentReport, _diagnosticLogs);
-                FindingsGrid.ItemsSource = _currentReport.Inventory.Select(ToInventoryRow).ToList();
+                _inventoryRows.Clear();
+                foreach (InventoryEntry entry in _currentReport.Inventory) _inventoryRows.Add(ToInventoryRow(entry));
                 OverviewStatus.Text = _currentReport.Conclusion.Summary;
                 OverviewEvidence.Text = Localize("报告 ID：", "Report ID: ") + _currentReport.ReportId + Localize("；清单 ", "; inventory ") + _currentReport.Inventory.Count + Localize(" 项；发现 ", "; findings ") + _currentReport.Findings.Count + (_isEnglish ? "." : " 项。");
                 ToolbarStatus.Text = Localize("扫描完成", "Scan complete");
-                ShowPage("overview");
+                OperationStatus.Text = Localize("扫描完成，共 ", "Scan complete: ") + _currentReport.Inventory.Count + Localize(" 项。", " items.");
+                if (repairedReport != null) OperationStatus.Text += " " + _lastRepairSummary + Localize(" 修复动作和重扫结果已保存到同一报告。", " Repair actions and verification were saved together.");
+            }
+            catch (OperationCanceledException)
+            {
+                OperationStatus.Text = Localize("扫描已取消；当前是部分结果，请重新扫描后再修复。", "Scan cancelled; results are partial. Scan again before repairing.");
+                OverviewStatus.Text = OperationStatus.Text;
+                _currentReport = repairedReport;
+                if (repairedReport != null) ReportHistoryStore.Save(repairedReport, _diagnosticLogs);
             }
             catch (Exception ex)
             {
                 OverviewStatus.Text = Localize("扫描失败：", "Scan failed: ") + SensitiveDataRedactor.Redact(ex.Message);
                 ToolbarStatus.Text = Localize("扫描失败", "Scan failed");
+                OperationStatus.Text = OverviewStatus.Text;
+                _currentReport = repairedReport;
+                if (repairedReport != null) ReportHistoryStore.Save(repairedReport, _diagnosticLogs);
             }
             finally
             {
-                Cursor = null;
+                _scanRunning = false;
+                _operationCancellation.Dispose();
+                _operationCancellation = null;
+                OperationProgress.Visibility = Visibility.Collapsed;
+                ShowPage(_currentPageKey);
             }
         }
 
-        private void ErrorDiagnosisButton_Click(object sender, RoutedEventArgs e)
+        private static bool IsCorePage(string key) { return key == "runtime" || key == "directx" || key == "dll" || key == "components" || key == "drivers"; }
+
+        private void UpdateBusyControls()
         {
+            ScanButton.IsEnabled = ModuleScanButton.IsEnabled = !IsBusy;
+            EnableUpdateServiceButton.IsEnabled = !IsBusy;
+            ModuleSelectButton.IsEnabled = ModuleGrid.IsEnabled = !IsBusy;
+            RefreshButton.IsEnabled = ErrorDiagnosisButton.IsEnabled = !IsBusy;
+            AuthorizationActivateButton.IsEnabled = !IsBusy;
+            ExportReportButton.IsEnabled = ExportModuleReportButton.IsEnabled = !IsBusy;
+            CancelOperationButton.Visibility = _scanRunning || _repairRunning ? Visibility.Visible : Visibility.Collapsed;
+            CancelOperationButton.IsEnabled = _operationCancellation != null && !_operationCancellation.IsCancellationRequested;
+            foreach (InventoryRow row in _inventoryRows) row.CanClickRepair = !IsBusy && row.IsRepairCandidate && _currentReport != null && (row.Entry.Category != "driver" || _driverScanComplete);
+        }
+
+        private void CancelOperationButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_operationCancellation == null) return;
+            _operationCancellation.Cancel();
+            CancelOperationButton.IsEnabled = false;
+            OperationStatus.Text = _repairRunning ? Localize("已请求停止；等待当前安装退出后结束，不强杀安装器。", "Stop requested; waiting for the active installer to exit.") : Localize("正在取消扫描…", "Cancelling scan…");
+        }
+
+        private async Task RunDriverScanAsync()
+        {
+            if (IsBusy) return;
+            _scanRunning = true;
+            _driverScanComplete = false;
+            _operationCancellation = new CancellationTokenSource();
+            DismissRepairButton_Click(null, null);
+            UpdateBusyControls();
+            ModulePrimaryButton.IsEnabled = false;
+            OperationProgress.Visibility = Visibility.Visible;
+            OperationProgress.IsIndeterminate = true;
+            OperationStatus.Text = Localize("正在检测设备并查询 Windows Update 驱动…", "Checking devices and querying Windows Update drivers…");
+            try
+            {
+                var result = await DriverUpdateService.ScanAsync(DriverProgress, _operationCancellation.Token);
+                if (_currentReport == null)
+                {
+                    _currentReport = ReportBuilder.Create(GetApplicationVersion());
+                    _currentReport.Scan.StartedUtc = _currentReport.CreatedUtc;
+                    _reportHistory.Insert(0, _currentReport);
+                    _inventoryRows.Clear();
+                    _diagnosticLogs.Clear();
+                }
+                _currentReport.Scan.Mode = "driver-read-only";
+                _currentReport.Inventory.RemoveAll(x => x.Category == "driver");
+                _currentReport.Inventory.AddRange(result.Inventory);
+                foreach (var row in _inventoryRows.Where(x => x.Entry.Category == "driver").ToList()) _inventoryRows.Remove(row);
+                foreach (var entry in result.Inventory) _inventoryRows.Add(ToInventoryRow(entry));
+                _diagnosticLogs.AddRange(result.Logs);
+                _currentReport.Authorization = ToAuthorizationSummary(AuthorizationService.Load());
+                _currentReport.Scan.CompletedUtc = DateTime.UtcNow.ToString("o");
+                _currentReport.Findings = WindowsRepairService.BuildFindings(_currentReport.Inventory);
+                _currentReport.Conclusion = new ReportConclusion { Status = "scanned", FindingCount = _currentReport.Findings.Count, RepairableCount = _currentReport.Inventory.Count(x => x.RepairSupported), Summary = result.Summary };
+                ReportHistoryStore.Save(_currentReport, _diagnosticLogs);
+                FindingsGrid.ItemsSource = _inventoryRows;
+                _driverScanComplete = true;
+                OperationStatus.Text = result.Summary;
+                OverviewStatus.Text = result.Summary;
+            }
+            catch (OperationCanceledException) { OperationStatus.Text = Localize("驱动查询已取消；未修改设备。", "Driver query cancelled; devices were not changed."); }
+            catch (Exception ex) { OperationStatus.Text = Localize("驱动查询未完成：", "Driver query incomplete: ") + SensitiveDataRedactor.Redact(ex.Message); }
+            finally
+            {
+                _scanRunning = false;
+                _operationCancellation.Dispose();
+                _operationCancellation = null;
+                OperationProgress.Visibility = Visibility.Collapsed;
+                ShowPage(_currentPageKey);
+            }
+        }
+
+        private void DriverProgress(DriverUpdateProgress progress)
+        {
+            Dispatcher.Invoke(new Action(() =>
+            {
+                OperationProgress.IsIndeterminate = progress.Stage == "searching" || progress.Stage == "scanning";
+                OperationProgress.Value = progress.Percent;
+                OperationStatus.Text = LocalizeRepairStage(progress.Stage) + " · " + progress.DisplayName +
+                    (progress.Total > 0 ? " · " + progress.Current + "/" + progress.Total : "");
+            }), System.Windows.Threading.DispatcherPriority.Background);
+        }
+
+        private void EnableUpdateServiceButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (IsBusy || _currentReport == null) return;
+            DismissRepairButton_Click(null, null);
+            _pendingEnableUpdateService = true;
+            _authorization = AuthorizationService.Load();
+            AllowWithoutRestoreCheck.Visibility = Visibility.Collapsed;
+            RepairPlanText.Text = Localize("确认将 Windows Update（wuauserv）启动方式设为“手动”并启动该服务，然后重新查询匹配驱动。需要管理员权限；变更前后的服务状态会写入报告。此步骤不会安装驱动。", "Set Windows Update (wuauserv) to Manual and start it, then query matching drivers again. Administrator access is required. Before and after service states are recorded; this step does not install drivers.") + Environment.NewLine + Localize("授权状态：", "License: ") + _authorization.State;
+            ConfirmRepairButton.IsEnabled = _authorization.CanRepair;
+            RepairPlanPanel.Visibility = Visibility.Visible;
+        }
+
+        private async Task RunEnableUpdateServiceAsync()
+        {
+            if (IsBusy || !_pendingEnableUpdateService || _currentReport == null) return;
+            DismissRepairButton_Click(null, null);
+            _repairRunning = true;
+            _operationCancellation = new CancellationTokenSource();
+            UpdateBusyControls();
+            ModulePrimaryButton.IsEnabled = false;
+            bool recheck = false;
+            try
+            {
+                var result = await DriverUpdateService.EnableUpdateServiceAsync(true, _operationCancellation.Token);
+                _currentReport.Actions.AddRange(result.Actions);
+                _diagnosticLogs.AddRange(result.Logs);
+                ReportHistoryStore.Save(_currentReport, _diagnosticLogs);
+                recheck = result.Actions.Any(x => x.Result == "completed");
+                OperationStatus.Text = recheck ? Localize("Windows Update 已启用，正在重新检测。", "Windows Update enabled; checking again.") : Localize("未能启用 Windows Update；退出码和原因已记录。", "Windows Update could not be enabled; the exit code and reason were recorded.");
+            }
+            catch (Exception ex) { OperationStatus.Text = SensitiveDataRedactor.Redact(ex.Message); }
+            finally
+            {
+                _repairRunning = false;
+                _operationCancellation.Dispose();
+                _operationCancellation = null;
+                ShowPage(_currentPageKey);
+            }
+            if (recheck) await RunDriverScanAsync();
+        }
+
+        private async Task RunDriverInstallAsync()
+        {
+            if (IsBusy || !_driverScanComplete || _pendingRepair == null) return;
+            var ids = _pendingRepair.Select(x => x.RepairAction.Substring("driver:".Length)).ToList();
+            var report = _currentReport;
+            DismissRepairButton_Click(null, null);
+            _repairRunning = true;
+            _operationCancellation = new CancellationTokenSource();
+            UpdateBusyControls();
+            ModulePrimaryButton.IsEnabled = false;
+            OperationProgress.Visibility = Visibility.Visible;
+            bool completed = false;
+            try
+            {
+                var result = await DriverUpdateService.InstallAsync(ids, true, DriverProgress, _operationCancellation.Token);
+                report.Actions.AddRange(result.Actions);
+                _diagnosticLogs.AddRange(result.Logs);
+                ReportHistoryStore.Save(report, _diagnosticLogs);
+                _lastRepairSummary = result.RebootRequired ? Localize("驱动动作完成；需重启后复核。", "Driver action finished; restart required for verification.") : Localize("驱动动作已记录。", "Driver actions were recorded.");
+                OperationStatus.Text = _lastRepairSummary;
+                completed = true;
+            }
+            catch (Exception ex) { OperationStatus.Text = Localize("驱动安装未完成：", "Driver installation incomplete: ") + SensitiveDataRedactor.Redact(ex.Message); }
+            finally
+            {
+                _repairRunning = false;
+                _operationCancellation.Dispose();
+                _operationCancellation = null;
+                OperationProgress.Visibility = Visibility.Collapsed;
+                ShowPage(_currentPageKey);
+            }
+            if (completed)
+            {
+                await RunDriverScanAsync();
+                OperationStatus.Text += " " + _lastRepairSummary;
+            }
+        }
+
+        private async void ErrorDiagnosisButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (IsBusy) return;
             var dialog = new ErrorDiagnosisWindow();
             dialog.Owner = this;
             if (dialog.ShowDialog() != true) return;
@@ -182,10 +437,8 @@ namespace YushuAfterSales
             {
                 if (_currentReport == null)
                 {
-                    _diagnosticLogs.Clear();
-                    _currentReport = WindowsRepairService.Scan(GetApplicationVersion());
-                    _currentReport.Authorization = ToAuthorizationSummary(_authorization);
-                    _reportHistory.Insert(0, _currentReport);
+                    await RunScanAsync(null);
+                    if (_currentReport == null) return;
                 }
                 _currentReport.Scan.ErrorCode = dialog.ErrorCode;
                 if (!String.IsNullOrWhiteSpace(dialog.TargetPath))
@@ -219,7 +472,9 @@ namespace YushuAfterSales
                         (String.IsNullOrWhiteSpace(dialog.TargetPath) ? "No executable selected." : "Target executable evidence: evidence-target-executable.")
                 });
                 ReportHistoryStore.Save(_currentReport, _diagnosticLogs);
-                FindingsGrid.ItemsSource = _currentReport.Inventory.Select(ToInventoryRow).ToList();
+                _inventoryRows.Clear();
+                foreach (InventoryEntry entry in _currentReport.Inventory) _inventoryRows.Add(ToInventoryRow(entry));
+                FindingsGrid.ItemsSource = _inventoryRows;
                 OverviewStatus.Text = Localize("错误码已加入报告：", "Error code added to report: ") + dialog.ErrorCode;
                 OverviewEvidence.Text = Localize("错误码证据：evidence-user-error-code；目标程序不会被自动启动。", "Error code evidence: evidence-user-error-code. The target application was not started.");
                 ToolbarStatus.Text = Localize("诊断线索已记录", "Diagnostic clues recorded");
@@ -232,6 +487,9 @@ namespace YushuAfterSales
 
         private async void RefreshButton_Click(object sender, RoutedEventArgs e)
         {
+            if (IsBusy) return;
+            if (_currentPageKey == "drivers") { await RunDriverScanAsync(); return; }
+            if (IsCorePage(_currentPageKey)) { await RunScanAsync(null); return; }
             if (_currentPageKey == "overview")
             {
                 if (_currentReport == null) { ToolbarStatus.Text = Localize("请先开始只读扫描", "Start a read-only scan first"); return; }
@@ -299,6 +557,7 @@ namespace YushuAfterSales
 
         private async void ModulePrimaryButton_Click(object sender, RoutedEventArgs e)
         {
+            if (IsBusy) return;
             if (_currentPageKey == "license") { await RefreshAuthorizationOnlineAsync(); return; }
             if (_currentPageKey == "reports") { ExportReportButton_Click(sender, e); return; }
             if (_currentPageKey == "updates")
@@ -306,7 +565,7 @@ namespace YushuAfterSales
                 await CheckForUpdatesAsync();
                 return;
             }
-            if (_currentPageKey == "runtime" || _currentPageKey == "directx" || _currentPageKey == "dll")
+            if (IsCorePage(_currentPageKey))
             {
                 ShowRepairPreview();
                 return;
@@ -562,29 +821,136 @@ namespace YushuAfterSales
             int selected = rows.Count(x => x.IsSelected);
             ModuleSelectButton.Content = candidates > 0 && selected == candidates
                 ? Localize("取消全选", "Clear selection")
-                : Localize("全选待复核", "Select review items");
-            SelectionSummary.Text = _currentPageKey == "runtime" || _currentPageKey == "directx" || _currentPageKey == "dll"
-                ? Localize("待复核项目：" + candidates + "；已选择：" + selected + "。执行前仅生成预览，不会直接覆盖文件。", "Review candidates: " + candidates + "; selected: " + selected + ". The next step only creates a preview and never overwrites files directly.")
+                : Localize("全选待修复", "Select repair items");
+            SelectionSummary.Text = IsCorePage(_currentPageKey)
+                ? Localize("清单：" + rows.Count + "；待修复：" + candidates + "；已选择：" + selected, "Items: " + rows.Count + "; repairable: " + candidates + "; selected: " + selected)
                 : String.Empty;
+            if (IsCorePage(_currentPageKey)) ModulePrimaryButton.IsEnabled = !IsBusy && _currentReport != null && selected > 0;
         }
 
         private void ShowRepairPreview()
         {
-            List<InventoryRow> selected = GetVisibleModuleRows().Where(x => x.IsSelected).ToList();
-            if (selected.Count == 0)
+            PrepareRepair(GetVisibleModuleRows().Where(x => x.IsSelected && x.IsRepairCandidate).Select(x => x.Entry));
+        }
+
+        private void RowRepairButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (IsBusy || _currentReport == null) return;
+            var row = (sender as Button)?.DataContext as InventoryRow;
+            if (row != null && row.IsRepairCandidate) PrepareRepair(new[] { row.Entry });
+        }
+
+        private void PrepareRepair(IEnumerable<InventoryEntry> entries)
+        {
+            if (IsBusy || _currentReport == null) return;
+            _pendingRepair = entries.Where(x => x != null).ToList();
+            AllowWithoutRestoreCheck.IsChecked = false;
+            AllowWithoutRestoreCheck.Visibility = Visibility.Visible;
+            if (_pendingRepair.Count == 0)
             {
-                MessageBox.Show(Localize("请先勾选需要复核的项目。", "Select at least one item first."), Localize("修复预览", "Repair preview"), MessageBoxButton.OK, MessageBoxImage.Information);
+                OperationStatus.Text = Localize("请先选择缺失或异常项。", "Select missing or abnormal items first.");
                 return;
             }
+            _authorization = AuthorizationService.Load();
+            if (_pendingRepair.All(x => x.Category == "driver"))
+            {
+                if (!_driverScanComplete) return;
+                AllowWithoutRestoreCheck.Visibility = Visibility.Collapsed;
+                RepairPlanText.Text = Localize("将通过 Windows Update 下载并安装这些设备匹配驱动：", "Download and install these matching drivers via Windows Update:") + Environment.NewLine +
+                    String.Join(Environment.NewLine, _pendingRepair.Select(x => "• " + x.DisplayName)) + Environment.NewLine +
+                    Localize("需要 UAC；执行前尝试创建还原点。驱动包由 Windows Update 校验，安装后重新查询；可能需要重启。", "UAC is required; a restore point is attempted. Windows Update verifies the packages. Recheck after installation; a restart may be required.") + Environment.NewLine +
+                    Localize("授权状态：", "License: ") + _authorization.State;
+                ConfirmRepairButton.IsEnabled = _authorization.CanRepair;
+                RepairPlanPanel.Visibility = Visibility.Visible;
+                return;
+            }
+            var plan = ComponentRepairService.BuildPlan(_pendingRepair);
+            RepairPlanText.Text = Localize("将下载并安装以下官方组件（同一安装包只执行一次）：", "Download and install these official components (deduplicated):") + Environment.NewLine +
+                String.Join(Environment.NewLine, plan.Select(p => "• " + p.DisplayName + " [" + p.Architecture + "]" + (p.Supported ? "" : " — " + p.Reason))) + Environment.NewLine +
+                Localize("SHA-256 与发布者签名校验 → UAC → 尝试创建还原点 → 安装 → 重扫验证。安装可能需要重启。", "SHA-256 and publisher verification → UAC → restore point attempt → installation → verification scan. A restart may be required.") + Environment.NewLine +
+                Localize("授权状态：", "License: ") + _authorization.State;
+            ConfirmRepairButton.IsEnabled = plan.Count > 0 && plan.All(x => x.Supported) && _authorization.CanRepair;
+            RepairPlanPanel.Visibility = Visibility.Visible;
+            if (!_authorization.CanRepair) OperationStatus.Text = Localize("正式版修复需要有效授权；当前授权未配置或无效。", "Production repairs require a valid license; authorization is missing or invalid.");
+        }
 
-            string authorization = _authorization == null ? "unknown" : _authorization.State;
-            string mode = _authorization != null && _authorization.CanRepair ? Localize("已授权；仍需单独确认并校验官方包。", "Authorized; explicit confirmation and official package verification are still required.") : Localize("未授权；仅允许查看报告和官方来源。", "Not authorized; only reports and official sources are available.");
-            string body = Localize("将要预览的项目：", "Items in preview: ") + Environment.NewLine +
-                String.Join(Environment.NewLine, selected.Select(x => "• " + x.DisplayName + " [" + x.Architecture + "] - " + x.StatusLabel + " - " + (String.IsNullOrEmpty(x.SourceUrl) ? Localize("无官方来源", "no official source") : x.SourceUrl))) +
-                Environment.NewLine + Environment.NewLine + Localize("授权状态：", "License: ") + authorization + "。" + mode + Environment.NewLine +
-                Localize("目标：只使用可校验的微软/厂商官方安装包；DLL 不从未知来源下载或覆盖。", "Policy: use only verifiable Microsoft/vendor packages; never download or overwrite DLLs from unknown sources.");
-            MessageBox.Show(body, Localize("修复预览", "Repair preview"), MessageBoxButton.OK, MessageBoxImage.Information);
-            ToolbarStatus.Text = Localize("已生成修复预览", "Repair preview created");
+        private void DismissRepairButton_Click(object sender, RoutedEventArgs e)
+        {
+            _pendingRepair = null;
+            _pendingEnableUpdateService = false;
+            if (RepairPlanPanel != null) RepairPlanPanel.Visibility = Visibility.Collapsed;
+        }
+
+        private async void ConfirmRepairButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_pendingEnableUpdateService) { await RunEnableUpdateServiceAsync(); return; }
+            if (IsBusy || _currentReport == null || _pendingRepair == null || _pendingRepair.Count == 0) return;
+            if (_pendingRepair.All(x => x.Category == "driver")) { await RunDriverInstallAsync(); return; }
+            var selected = _pendingRepair.ToList();
+            var report = _currentReport;
+            bool allowWithoutRestore = AllowWithoutRestoreCheck.IsChecked == true;
+            DismissRepairButton_Click(null, null);
+            _repairRunning = true;
+            _operationCancellation = new CancellationTokenSource();
+            UpdateBusyControls();
+            ModulePrimaryButton.IsEnabled = false;
+            OperationProgress.Visibility = Visibility.Visible;
+            bool started = false;
+            try
+            {
+                Action<RepairProgress> progress = p => Dispatcher.Invoke(new Action(() =>
+                {
+                    OperationProgress.IsIndeterminate = p.Stage == "installing" || p.Stage == "extracting";
+                    OperationProgress.Value = p.Percent;
+                    string stage = LocalizeRepairStage(p.Stage);
+                    OperationStatus.Text = p.ItemIndex + "/" + p.ItemCount + " · " + stage + " · " + p.Component +
+                        (p.BytesReceived > 0 ? " · " + (p.BytesReceived / 1048576.0).ToString("F1") + " MB" + (p.TotalBytes > 0 ? " / " + (p.TotalBytes / 1048576.0).ToString("F1") + " MB" : "") : "");
+                    ToolbarStatus.Text = stage;
+                }), System.Windows.Threading.DispatcherPriority.Background);
+                var results = await ComponentRepairService.ExecuteAsync(selected, true, progress, _operationCancellation.Token, allowWithoutRestore);
+                foreach (var result in results)
+                {
+                    started |= result.Started;
+                    if (result.Action != null) report.Actions.Add(result.Action);
+                    if (result.Log != null) _diagnosticLogs.Add(result.Log);
+                }
+                ReportHistoryStore.Save(report, _diagnosticLogs);
+                OperationStatus.Text = Localize("安装执行完成：", "Installation finished: ") + results.Count(x => x.Success) + "/" + results.Count +
+                    (results.Any(x => x.RebootRequired) ? Localize("；需要重启后复核。", "; restart required for verification.") : "") +
+                    " " + String.Join("; ", results.Where(x => !x.Success).Select(x => x.Message));
+                _lastRepairSummary = OperationStatus.Text;
+            }
+            catch (Exception ex)
+            {
+                OperationStatus.Text = Localize("修复未完成：", "Repair incomplete: ") + SensitiveDataRedactor.Redact(ex.Message);
+            }
+            finally
+            {
+                _repairRunning = false;
+                _operationCancellation.Dispose();
+                _operationCancellation = null;
+                OperationProgress.Visibility = Visibility.Collapsed;
+                ShowPage(_currentPageKey);
+            }
+            if (started) await RunScanAsync(report);
+        }
+
+        private string LocalizeRepairStage(string stage)
+        {
+            switch (stage)
+            {
+                case "downloading": return Localize("下载", "Downloading");
+                case "verifying": return Localize("校验", "Verifying");
+                case "extracting": return Localize("解压", "Extracting");
+                case "installing": return Localize("安装修复", "Installing");
+                case "completed": return Localize("执行完成", "Finished");
+                case "cancelled": return Localize("已取消", "Cancelled");
+                case "failed": return Localize("失败", "Failed");
+                case "blocked": return Localize("已阻止", "Blocked");
+                case "scanning": return Localize("扫描", "Scanning");
+                case "searching": return Localize("查询驱动", "Searching drivers");
+                default: return Localize("准备", "Preparing");
+            }
         }
 
         private void OpenReportFolderButton_Click(object sender, RoutedEventArgs e)
@@ -604,43 +970,49 @@ namespace YushuAfterSales
         {
             if (key == "reports")
                 return _reportHistory.Select(x => new InventoryEntry { ComponentId = x.ReportId, DisplayName = Localize("诊断报告 ", "Diagnostic report ") + x.ReportId, DetectedVersion = x.CreatedUtc, ExpectedVersion = Localize("发现 ", "") + (x.Findings == null ? 0 : x.Findings.Count) + Localize(" 项", " findings"), Status = "local-history", EvidenceId = "report-" + x.ReportId }).Take(100).Select(ToInventoryRow).ToList();
-            if (_currentReport == null) return new List<InventoryRow>();
-            IEnumerable<InventoryEntry> items = _currentReport.Inventory;
-            if (key == "runtime")
-            {
-                List<InventoryEntry> detected = items.Where(x => x.Category == "vc-runtime" || x.Category == "dotnet").ToList();
-                IEnumerable<InventoryEntry> catalog = RuntimeCatalog.Packages
-                    .Where(x => x.Category == "VC++" && x.Id != "vc-2015plus-x86" && x.Id != "vc-2015plus-x64")
-                    .Select(x => new InventoryEntry
-                    {
-                        ComponentId = x.Id,
-                        Category = "catalog-only",
-                        DisplayName = x.DisplayName,
-                        Architecture = x.Architecture,
-                        ExpectedVersion = x.Notes,
-                        SourceUrl = x.OfficialUrl,
-                        Compatibility = x.SupportsWindows7 ? "Windows 7/10/11" : "Windows 10/11 only",
-                        Status = "catalog-only",
-                        EvidenceId = "catalog-" + x.Id,
-                        Details = "官方来源目录；尚未针对具体目标程序确认是否需要。"
-                    });
-                items = detected.Concat(catalog);
-            }
-            else if (key == "directx") items = items.Where(x => x.Category == "directx" || x.Category == "directx-legacy-file");
-            else if (key == "dll") items = items.Where(x => x.Category == "dll");
-            else if (key == "components") items = RuntimeCatalog.Packages.Where(x => x.Category == "游戏组件" || x.Category == "游戏平台").Select(x => new InventoryEntry { ComponentId = x.Id, DisplayName = x.DisplayName, ExpectedVersion = x.Notes, SourceUrl = x.OfficialUrl, Compatibility = x.SupportsWindows7 ? "Windows 7/10/11" : "Windows 10/11 only", Status = "catalog-only", EvidenceId = "catalog-" + x.Id });
-            return items.Select(ToInventoryRow).ToList();
+            return _inventoryRows.Where(x => EntryMatchesPage(x.Entry, key)).ToList();
         }
 
         private InventoryRow ToInventoryRow(InventoryEntry item)
         {
-            string status = item.Status == "installed" ? Localize("已安装", "Installed") : item.Status == "missing" || item.Status == "missing-or-unknown" || item.Status == "unknown" ? Localize("需复核", "Needs review") : item.Status == "catalog-only" ? Localize("仅官方目录", "Official catalog only") : item.Status == "local-history" ? Localize("本地历史", "Local history") : item.Status;
-            bool candidate = item.Status == "missing" || item.Status == "missing-or-unknown" || item.Status == "unknown" || item.Status == "outdated";
-            return new InventoryRow { ComponentId = item.ComponentId, SourceUrl = item.SourceUrl, DisplayName = item.DisplayName, Architecture = item.Architecture, DetectedVersion = item.DetectedVersion, ExpectedVersion = item.ExpectedVersion, StatusLabel = status, Compatibility = item.Compatibility, SourceLabel = String.IsNullOrEmpty(item.SourceUrl) ? Localize("本机证据", "Local evidence") : Localize("官方来源", "Official source"), EvidenceId = item.EvidenceId, IsRepairCandidate = candidate, IsSelected = false };
+            bool candidate = item.RepairSupported && (item.Status == "missing" || item.Status == "corrupt" || item.Status == "invalid" || item.Status == "outdated" || item.Status == "architecture-mismatch");
+            string label = item.Status == "installed" && (item.Category == "dll" || item.Category == "directx-legacy-file") ? Localize("结构正常", "Valid structure") : StatusLabel(item.Status);
+            var row = new InventoryRow { Entry = item, ComponentId = item.ComponentId, SourceUrl = item.SourceUrl, DisplayName = item.DisplayName, Architecture = item.Architecture, DetectedVersion = item.DetectedVersion, ExpectedVersion = item.ExpectedVersion, StatusLabel = label, Compatibility = item.Compatibility, SourceLabel = String.IsNullOrEmpty(item.SourceUrl) ? Localize("本机证据", "Local evidence") : Localize("官方包", "Official package"), EvidenceId = item.EvidenceId, IsRepairCandidate = candidate, IsSelected = candidate, CanClickRepair = candidate && !IsBusy && _currentReport != null, RepairLabel = candidate ? Localize("立即修复", "Repair") : Localize("—", "—") };
+            row.PropertyChanged += (sender, e) => { if (e.PropertyName == "IsSelected") UpdateSelectionSummary(); };
+            return row;
         }
 
-        private sealed class InventoryRow
+        private static bool EntryMatchesPage(InventoryEntry item, string key)
         {
+            if (item == null) return false;
+            if (key == "runtime") return item.Category == "vc-runtime" || item.Category == "dotnet" || item.Category == "ucrt" || item.Category == "vstor";
+            if (key == "directx") return item.Category == "directx" || item.Category == "directx-legacy-file";
+            if (key == "dll") return item.Category == "dll";
+            if (key == "drivers") return item.Category == "driver";
+            if (key == "components") return item.Category == "game-runtime" || item.Category == "game-platform";
+            return true;
+        }
+
+        private string StatusLabel(string status)
+        {
+            switch (status)
+            {
+                case "installed": case "complete": return Localize("完整", "Complete");
+                case "present": case "observed": return Localize("文件存在", "File present");
+                case "missing": return Localize("缺失", "Missing");
+                case "outdated": return Localize("需升级", "Outdated");
+                case "corrupt": case "invalid": case "architecture-mismatch": return Localize("异常", "Abnormal");
+                case "unsupported": case "not-applicable": return Localize("系统不适用", "Not applicable");
+                case "unknown": case "missing-or-unknown": return Localize("需复核", "Needs review");
+                case "catalog-only": return Localize("尚未检测", "Not scanned");
+                case "local-history": return Localize("本地历史", "Local history");
+                default: return status;
+            }
+        }
+
+        private sealed class InventoryRow : INotifyPropertyChanged
+        {
+            public InventoryEntry Entry { get; set; }
             public string ComponentId { get; set; }
             public string SourceUrl { get; set; }
             public string DisplayName { get; set; }
@@ -652,7 +1024,12 @@ namespace YushuAfterSales
             public string SourceLabel { get; set; }
             public string EvidenceId { get; set; }
             public bool IsRepairCandidate { get; set; }
-            public bool IsSelected { get; set; }
+            public string RepairLabel { get; set; }
+            private bool _selected;
+            public bool IsSelected { get { return _selected; } set { _selected = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs("IsSelected")); } }
+            private bool _canClickRepair;
+            public bool CanClickRepair { get { return _canClickRepair; } set { _canClickRepair = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs("CanClickRepair")); } }
+            public event PropertyChangedEventHandler PropertyChanged;
         }
 
         private void ApplyTheme(string theme)
@@ -708,6 +1085,12 @@ namespace YushuAfterSales
             OverviewTitle.Text = _isEnglish ? "Full scan" : "全面扫描";
             OverviewDescription.Text = _isEnglish ? "Check installed runtimes, system components, and common dependencies." : "检查本机已安装的运行库、系统组件与常见依赖";
             ScanButton.Content = _isEnglish ? "Start scan  →" : "开始扫描  →";
+            ModuleScanButton.Content = _isEnglish ? "Start scan" : "开始扫描";
+            CancelOperationButton.Content = _isEnglish ? "Cancel" : "取消";
+            EnableUpdateServiceButton.Content = _isEnglish ? "Enable Windows Update and recheck" : "启用 Windows Update 并重查";
+            ConfirmRepairButton.Content = _isEnglish ? "Download and repair" : "确认下载并修复";
+            DismissRepairButton.Content = _isEnglish ? "Back to list" : "返回清单";
+            AllowWithoutRestoreCheck.Content = _isEnglish ? "Continue if restore point fails (no restore point rollback)" : "还原点创建失败时仍继续（无法用还原点回滚）";
             ErrorDiagnosisButton.Content = _isEnglish ? "Error diagnosis" : "错误码诊断";
             OverviewSafetyNote.Text = _isEnglish ? "Scanning is read-only by default. Review every piece of evidence before any install or system action." : "扫描默认只读。完成后可复核每一项证据；任何安装或系统级操作均需单独确认。";
             OpenOfficialButton.Content = _isEnglish ? "Open official source" : "打开官方来源";
@@ -715,8 +1098,8 @@ namespace YushuAfterSales
             OpenSourceListButton.Content = _isEnglish ? "Open selected official source" : "打开选中项官方来源";
             ExportModuleReportButton.Content = _isEnglish ? "Export diagnostic ZIP" : "导出诊断 ZIP";
             OpenReportFolderButton.Content = _isEnglish ? "Open report folder" : "打开报告目录";
-            ModuleSelectButton.Content = _isEnglish ? "Select review items" : "全选待复核";
-            SelectionSummary.Text = _isEnglish ? "Select review candidates; a preview is shown before any repair." : "可选择待复核项目；修复前会显示预览。";
+            ModuleSelectButton.Content = _isEnglish ? "Select repair items" : "全选待修复";
+            SelectionSummary.Text = _isEnglish ? "Select missing items to download and install official packages." : "选择缺失项，确认后下载安装官方包。";
             OverviewHeaderEvidence.Text = _isEnglish ? "Component / evidence" : "组件 / 证据";
             OverviewHeaderVersion.Text = _isEnglish ? "Version" : "版本";
             OverviewHeaderStatus.Text = _isEnglish ? "Status" : "状态";
@@ -727,15 +1110,16 @@ namespace YushuAfterSales
             AuthorizationCodeBox.ToolTip = _isEnglish ? "Enter license code" : "输入授权卡密";
             AuthorizationCodeBox.SetValue(System.Windows.Automation.AutomationProperties.NameProperty, _isEnglish ? "License code" : "授权卡密");
             SystemActionCombo.ToolTip = _isEnglish ? "Choose a Windows repair action" : "选择 Windows 修复操作";
-            if (ModuleGrid.Columns.Count >= 7)
+            if (ModuleGrid.Columns.Count >= 8)
             {
-                ModuleGrid.Columns[0].Header = _isEnglish ? "Select" : "选择";
+                ModuleGrid.Columns[0].Header = _isEnglish ? "Sel." : "选择";
                 ModuleGrid.Columns[1].Header = _isEnglish ? "Component" : "组件";
-                ModuleGrid.Columns[2].Header = _isEnglish ? "Arch" : "架构";
-                ModuleGrid.Columns[3].Header = _isEnglish ? "Current version" : "当前版本";
-                ModuleGrid.Columns[4].Header = _isEnglish ? "Target version" : "目标版本";
-                ModuleGrid.Columns[5].Header = _isEnglish ? "Status" : "状态";
-                ModuleGrid.Columns[6].Header = _isEnglish ? "Evidence ID" : "证据 ID";
+                ModuleGrid.Columns[2].Header = _isEnglish ? "Action" : "操作";
+                ModuleGrid.Columns[3].Header = _isEnglish ? "Arch" : "架构";
+                ModuleGrid.Columns[4].Header = _isEnglish ? "Current" : "当前版本";
+                ModuleGrid.Columns[5].Header = _isEnglish ? "Target" : "目标版本";
+                ModuleGrid.Columns[6].Header = _isEnglish ? "Status" : "状态";
+                ModuleGrid.Columns[7].Header = _isEnglish ? "Evidence ID" : "证据 ID";
             }
             foreach (Button button in FindVisualChildren<Button>(ThemeMenu))
             {
@@ -760,6 +1144,7 @@ namespace YushuAfterSales
                 else if (key == "runtime") label.Text = _isEnglish ? "Runtime repair" : "运行库修复";
                 else if (key == "directx") label.Text = _isEnglish ? "DirectX repair" : "DirectX 修复";
                 else if (key == "dll") label.Text = _isEnglish ? "DLL repair" : "DLL 修复";
+                else if (key == "drivers") label.Text = _isEnglish ? "Driver installation" : "驱动安装";
                 else if (key == "system") label.Text = _isEnglish ? "System repair" : "系统修复";
                 else if (key == "components") label.Text = _isEnglish ? "Game components" : "游戏组件";
                 else if (key == "reports") label.Text = _isEnglish ? "Diagnostic reports" : "诊断报告";
@@ -776,6 +1161,27 @@ namespace YushuAfterSales
                 PlaceholderStatus.Text = GetStatusText(_currentPageKey);
                 ModuleEvidence.Text = GetEvidenceText(_currentPageKey);
             }
+            if (!IsBusy)
+            {
+                if (_currentReport != null)
+                {
+                    int missing = _currentReport.Inventory.Count(x => x.Status == "missing" || x.Status == "outdated" || x.Status == "corrupt" || x.Status == "architecture-mismatch");
+                    OverviewStatus.Text = Localize("已检测 " + _currentReport.Inventory.Count + " 项；缺失或异常 " + missing + " 项。", "Scanned " + _currentReport.Inventory.Count + " items; " + missing + " missing or abnormal.");
+                    OverviewEvidence.Text = Localize("报告 ID：", "Report ID: ") + _currentReport.ReportId;
+                    if (OperationStatus.Text.StartsWith("扫描完成") || OperationStatus.Text.StartsWith("Scan complete")) OperationStatus.Text = OverviewStatus.Text;
+                }
+                else OverviewStatus.Text = Localize("尚未完成扫描", "No completed scan");
+                if (OperationStatus.Text == "准备就绪" || OperationStatus.Text == "Ready") OperationStatus.Text = Localize("准备就绪", "Ready");
+                if (OperationStatus.Text.StartsWith("扫描已取消") || OperationStatus.Text.StartsWith("Scan cancelled")) OperationStatus.Text = Localize("扫描已取消；当前是部分结果，请重新扫描后再修复。", "Scan cancelled; results are partial. Scan again before repairing.");
+            }
+            foreach (InventoryRow row in _inventoryRows)
+            {
+                row.StatusLabel = ToInventoryRow(row.Entry).StatusLabel;
+                row.RepairLabel = row.IsRepairCandidate ? Localize("立即修复", "Repair") : "—";
+            }
+            FindingsGrid.Items.Refresh();
+            ModuleGrid.Items.Refresh();
+            ShowPage(_currentPageKey);
         }
 
         private static string EnglishPageTitle(string key)
@@ -786,6 +1192,7 @@ namespace YushuAfterSales
                 case "runtime": return "Runtime repair";
                 case "directx": return "DirectX repair";
                 case "dll": return "DLL repair";
+                case "drivers": return "Driver installation";
                 case "system": return "System repair";
                 case "components": return "Game components";
                 case "reports": return "Diagnostic reports";

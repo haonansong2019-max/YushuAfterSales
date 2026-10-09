@@ -69,27 +69,36 @@ namespace YushuAfterSales.Core
             if (inventory == null) return findings;
 
             foreach (InventoryEntry item in inventory.Where(x => x != null &&
-                (x.Status == "missing" || x.Status == "missing-or-unknown" || x.Status == "unknown" || x.Status == "outdated")))
+                (x.Status == "missing" || x.Status == "missing-or-unknown" || x.Status == "unknown" || x.Status == "outdated" || x.Status == "corrupt" || x.Status == "architecture-mismatch")))
             {
                 bool outdated = String.Equals(item.Status, "outdated", StringComparison.OrdinalIgnoreCase);
+                string category = (item.Category ?? "runtime").ToLowerInvariant();
+                string code = outdated
+                    ? category == "driver" ? "DRIVER-UPDATE-AVAILABLE" : category == "dotnet" ? "RUNTIME-DOTNET-OUTDATED" : "RUNTIME-OUTDATED"
+                    : item.Status == "corrupt" ? "FILE-CORRUPT"
+                    : item.Status == "architecture-mismatch" ? "FILE-WRONG-ARCHITECTURE"
+                    : category == "driver" ? item.Status == "missing" ? "DRIVER-MISSING" : "DRIVER-UNKNOWN"
+                    : "RUNTIME-" + (category == "directx-legacy-file" ? "DIRECTX" : category.ToUpperInvariant()) + (item.Status == "missing" ? "-MISSING" : "-UNKNOWN");
                 findings.Add(new FindingRecord
                 {
                     FindingId = "finding-" + item.EvidenceId,
-                    Code = outdated ? "RUNTIME-DOTNET-OUTDATED" :
-                        item.Category == "directx" ? "RUNTIME-DIRECTX-UNKNOWN" : "RUNTIME-" + (item.Category ?? "runtime").ToUpperInvariant() + "-UNKNOWN",
+                    Code = code,
                     Severity = "warning",
-                    Title = outdated ? item.DisplayName + " 低于目标版本" : item.DisplayName + " 需要进一步确认",
+                    Title = item.DisplayName + (outdated ? " 可更新" : item.Status == "missing" ? " 缺失" : item.Status == "corrupt" ? " 文件异常" : item.Status == "architecture-mismatch" ? " 架构不匹配" : " 需要进一步确认"),
                     Message = outdated
                         ? "已检测到该组件，但当前版本低于目标版本 " + (item.ExpectedVersion ?? "") + "。版本检测本身不能确认故障根因，请结合目标程序错误和关联证据复核。"
-                        : "检测不到完整安装证据。请先查看来源和兼容性，再决定是否执行修复。",
+                        : (item.Status == "corrupt" || item.Status == "architecture-mismatch") ? "文件结构或架构检查未通过。具体路径、检测值和修复路线见关联证据。"
+                        : item.Status == "missing" ? "组件缺失；有受信修复路线时可在软件内下载安装并重扫验证。" : "检测证据不足，不能据此自动安装。请查看关联设备状态、文件或注册表证据。",
                     EvidenceIds = String.IsNullOrEmpty(item.EvidenceId) ? new List<string>() : new List<string> { item.EvidenceId },
                     RootCauseCandidates = outdated
                         ? new List<string> { "组件版本低于目标版本", "目标程序另有兼容性或依赖问题" }
+                        : item.Status == "corrupt" ? new List<string> { "文件不是有效 PE 文件", "文件被截断或损坏" }
+                        : item.Status == "architecture-mismatch" ? new List<string> { "文件架构与目标进程不匹配", "安装了错误的 x86/x64 版本" }
                         : new List<string> { "未安装", "注册表信息缺失", "系统版本不兼容" },
-                    SuggestedActions = outdated
-                        ? new List<string> { "查看微软官方目标版本来源", "结合目标程序错误码复核", "来源校验通过后再升级" }
-                        : new List<string> { "打开官方来源", "重新扫描", "在预览后执行受控安装" },
-                    BlocksRepair = false
+                    SuggestedActions = item.RepairSupported
+                        ? new List<string> { "确认计划并下载校验官方包", "执行安装或 Windows 系统修复", "重新扫描验证并保留动作日志" }
+                        : new List<string> { "查看关联证据中的原因", "重新扫描或提供目标程序线索" },
+                    BlocksRepair = !item.RepairSupported
                 });
             }
             return findings;
@@ -142,9 +151,20 @@ namespace YushuAfterSales.Core
 
         public static ProcessResult RunSystemRepair(SystemRepairAction action, bool userConfirmed)
         {
+            return RunSystemRepair(action, userConfirmed, false);
+        }
+
+        internal static ProcessResult RunSystemRepair(SystemRepairAction action, bool userConfirmed, bool sessionRestoreCreated)
+        {
+            return RunSystemRepair(action, userConfirmed, sessionRestoreCreated, false);
+        }
+
+        internal static ProcessResult RunSystemRepair(SystemRepairAction action, bool userConfirmed, bool sessionRestoreCreated, bool allowWithoutRestorePoint)
+        {
             if (!userConfirmed) throw new InvalidOperationException("系统修复必须由调用方在预览后取得用户明确确认。" );
             if (!Enum.IsDefined(typeof(SystemRepairAction), action)) throw new ArgumentOutOfRangeException("action");
-            if (action == SystemRepairAction.EnableDotNet35 && !IsSystemActionSupported(action, Environment.OSVersion.Version))
+            if (!AuthorizationService.Load().CanRepair) throw new InvalidOperationException("系统修复需要有效的 ysrepair 授权。");
+            if (!IsSystemActionSupported(action, Environment.OSVersion.Version))
                 return new ProcessResult
                 {
                     Started = false,
@@ -152,12 +172,12 @@ namespace YushuAfterSales.Core
                     Action = action.ToString(),
                     RestorePointStatus = "not-attempted",
                     StandardOutput = String.Empty,
-                    StandardError = "Windows 7 不支持 Enable-WindowsOptionalFeature；未执行修复。",
+                    StandardError = "当前 Windows 版本不支持所选系统修复命令；未执行修复。",
                     CommandSummary = "not-supported-on-windows-7"
                 };
 
             string logPath = CreateLogPath(action);
-            string script = BuildPowerShellScript(action, logPath);
+            string script = BuildPowerShellScriptInSession(action, logPath, sessionRestoreCreated, allowWithoutRestorePoint);
             string encodedCommand = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
             var result = new ProcessResult
             {
@@ -175,7 +195,7 @@ namespace YushuAfterSales.Core
                 {
                     process.StartInfo = new ProcessStartInfo
                     {
-                        FileName = "powershell.exe",
+                        FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), Environment.Is64BitOperatingSystem && !Environment.Is64BitProcess ? "Sysnative" : "System32", @"WindowsPowerShell\v1.0\powershell.exe"),
                         Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + encodedCommand,
                         UseShellExecute = true,
                         Verb = "runas",
@@ -217,6 +237,11 @@ namespace YushuAfterSales.Core
 
         private static string BuildPowerShellScript(SystemRepairAction action, string logPath)
         {
+            return BuildPowerShellScriptInSession(action, logPath, false, false);
+        }
+
+        private static string BuildPowerShellScriptInSession(SystemRepairAction action, string logPath, bool sessionRestoreCreated, bool allowWithoutRestorePoint)
+        {
             string body;
             switch (action)
             {
@@ -234,10 +259,11 @@ namespace YushuAfterSales.Core
             }
 
             string safePath = EscapePowerShellSingleQuoted(logPath);
+            string checkpoint = sessionRestoreCreated ? "$restoreStatus='created'; $events.Add('YSRESTORESESSION=reused'); " :
+                "try { $before=@(Get-WmiObject -Namespace 'root/default' -Class SystemRestore -ErrorAction Stop | Select-Object -ExpandProperty SequenceNumber); Checkpoint-Computer -Description 'YushuAfterSales repair checkpoint' -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop; $after=@(Get-WmiObject -Namespace 'root/default' -Class SystemRestore -ErrorAction Stop | Select-Object -ExpandProperty SequenceNumber); if(@($after | Where-Object { $before -notcontains $_ }).Count -eq 0){throw 'No new restore point was created'}; $restoreStatus='created'; } catch { $events.Add('YSERROR=' + [string]$_.Exception.Message); } ";
             return "$ErrorActionPreference='Stop';$events=New-Object System.Collections.Generic.List[string];$actionExit=7401;$restoreStatus='failed';$actionStatus='not-run';" +
-                "try { Checkpoint-Computer -Description 'YushuAfterSales repair checkpoint' -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop; $restoreStatus='created'; } " +
-                "catch { $events.Add('YSERROR=' + [string]$_.Exception.Message); } " +
-                "if ($restoreStatus -eq 'created') { try { " + body +
+                checkpoint +
+                "if ($restoreStatus -eq 'created'" + (allowWithoutRestorePoint ? " -or $true" : "") + ") { try { " + body +
                 "$actionStatus=if($actionExit -eq 0){'completed'}else{'failed'}; } catch { $actionStatus='failed'; $actionExit=7402; $events.Add('YSACTIONERROR=' + [string]$_.Exception.Message); } } " +
                 "$events.Add('YSRESTORE=' + $restoreStatus);$events.Add('YSACTION=" + action.ToString() + "');$events.Add('YSACTIONSTATUS=' + $actionStatus);$events.Add('YSEXIT=' + [string]$actionExit);" +
                 "try { $text=$events -join [Environment]::NewLine; $text=$text -replace '(?i)[A-Z]:\\Users\\[^\\]+' ,'%USERPROFILE%'; " +
@@ -249,7 +275,7 @@ namespace YushuAfterSales.Core
         {
             if (!Enum.IsDefined(typeof(SystemRepairAction), action)) return false;
             if (operatingSystemVersion == null) return false;
-            if (action == SystemRepairAction.EnableDotNet35)
+            if (action == SystemRepairAction.EnableDotNet35 || action == SystemRepairAction.DismRestoreHealth)
                 return operatingSystemVersion.Major > 6 || (operatingSystemVersion.Major == 6 && operatingSystemVersion.Minor >= 2);
             return true;
         }

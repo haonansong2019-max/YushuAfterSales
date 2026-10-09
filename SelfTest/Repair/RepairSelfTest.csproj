@@ -3,17 +3,11 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net48</TargetFramework>
     <LangVersion>7.3</LangVersion>
-    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <Prefer32Bit>false</Prefer32Bit>
+    <AssemblyName>RepairSelfTest</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Remove="Repair\**" />
-    <ProjectReference Include="..\YushuAfterSales.csproj" />
+    <ProjectReference Include="..\..\YushuAfterSales.csproj" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="All" />
-  </ItemGroup>
-  <ItemGroup>
-    <Compile Remove="Authorization\**" />
-    <None Remove="Authorization\**" />
-    <Compile Remove="UI\**" />
-    <None Remove="UI\**" />
   </ItemGroup>
 </Project>

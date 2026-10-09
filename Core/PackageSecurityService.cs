@@ -146,6 +146,7 @@ namespace YushuAfterSales.Core
         {
             PackageValidationResult current = RevalidateBeforeLaunch(initial, expectedSha256, allowedPublishers, userConfirmed, "runas");
             if (!current.IsAllowed) throw new InvalidOperationException(current.Failure ?? "安装包未通过执行前校验。" );
+            if (!AuthorizationService.Load().CanRepair) throw new UnauthorizedAccessException("受控安装需要有效的 ysrepair 授权。");
 
             string fileName;
             string arguments;

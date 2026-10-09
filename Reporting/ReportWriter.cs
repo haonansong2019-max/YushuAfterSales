@@ -205,7 +205,9 @@ namespace YushuAfterSales.Reporting
                         SourceUrl = SensitiveDataRedactor.Redact(item.SourceUrl), PackageFile = SensitiveDataRedactor.RedactPath(item.PackageFile),
                         Sha256 = SensitiveDataRedactor.Redact(item.Sha256), SignatureStatus = SensitiveDataRedactor.Redact(item.SignatureStatus),
                         Compatibility = SensitiveDataRedactor.Redact(item.Compatibility), Status = SensitiveDataRedactor.Redact(item.Status),
-                        EvidenceId = SensitiveDataRedactor.Redact(item.EvidenceId), Details = SensitiveDataRedactor.Redact(item.Details)
+                        EvidenceId = SensitiveDataRedactor.Redact(item.EvidenceId), Details = SensitiveDataRedactor.Redact(item.Details),
+                        RepairSupported = item.RepairSupported, RepairSourcePolicy = SensitiveDataRedactor.Redact(item.RepairSourcePolicy),
+                        RepairAction = SensitiveDataRedactor.Redact(item.RepairAction)
                     });
             if (source.Findings != null)
                 foreach (FindingRecord item in source.Findings)
@@ -226,7 +228,8 @@ namespace YushuAfterSales.Reporting
                         StartedUtc = SensitiveDataRedactor.Redact(item.StartedUtc), CompletedUtc = SensitiveDataRedactor.Redact(item.CompletedUtc),
                         Permission = SensitiveDataRedactor.Redact(item.Permission), ExitCode = item.ExitCode,
                         Reboot = SensitiveDataRedactor.Redact(item.Reboot), Result = SensitiveDataRedactor.Redact(item.Result),
-                        CommandSummary = SensitiveDataRedactor.Redact(item.CommandSummary), EvidenceIds = RedactList(item.EvidenceIds)
+                        CommandSummary = SensitiveDataRedactor.Redact(item.CommandSummary), EvidenceIds = RedactList(item.EvidenceIds),
+                        SourcePolicy = SensitiveDataRedactor.Redact(item.SourcePolicy), AutomaticExecutionAllowed = item.AutomaticExecutionAllowed
                     });
             return target;
         }

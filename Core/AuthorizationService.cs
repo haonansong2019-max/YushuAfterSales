@@ -135,6 +135,10 @@ namespace YushuAfterSales.Core
         /// <summary>Reads only the local, DPAPI-protected grant. Missing configuration or invalid state fails closed.</summary>
         public static AuthorizationState Load()
         {
+#if FUNCTIONAL_TEST_BUILD
+            // Separate, visibly labelled local acceptance build; never enabled by configuration or environment.
+            return new AuthorizationState { AppId = ProductAppId, State = "unencrypted-functional-test", CanRepair = true };
+#else
             try
             {
                 if (String.IsNullOrWhiteSpace(ResolveBaseUrl())) return Invalid("not-configured");
@@ -184,6 +188,7 @@ namespace YushuAfterSales.Core
                 if (!String.IsNullOrWhiteSpace(_testStatePath)) _testLastLoadError = ex.GetType().Name + ":" + ex.Message;
                 return Invalid("invalid-local-state");
             }
+#endif
         }
 
         /// <summary>
