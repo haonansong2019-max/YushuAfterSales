@@ -26,6 +26,9 @@ namespace YushuAfterSales.Core
         public bool RequiresElevation { get; set; }
         public string Reason { get; set; }
         public string OfficialUrl { get; set; }
+        public string SourcePolicy { get; set; }
+        public bool RepairSupported { get; set; }
+        public string RepairAction { get; set; }
     }
 
     public sealed class ProcessResult
@@ -101,17 +104,22 @@ namespace YushuAfterSales.Core
                 RuntimePackage package = RuntimeCatalog.Find(item.ComponentId);
                 if (package == null && item.ComponentId == "dotnet-framework-4-full")
                     package = RuntimeCatalog.Find("dotnet-48");
+                string sourceUrl = String.IsNullOrEmpty(item.SourceUrl) ? package == null ? String.Empty : package.OfficialUrl : item.SourceUrl;
+                bool repairSupported = item.RepairSupported && !String.IsNullOrEmpty(sourceUrl);
                 plan.Add(new RepairPlanItem
                 {
                     Id = item.ComponentId,
                     DisplayName = item.DisplayName,
                     Operation = item.Status == "outdated"
                         ? "打开官方来源；升级包接入受信哈希和签名清单后方可自动安装"
-                        : "打开官方来源；安装包接入受信哈希和签名清单后方可自动安装",
+                        : repairSupported ? "打开官方来源并人工复核安装包；当前不会自动覆盖文件" : "仅生成诊断预览；没有受信自动修复路线",
                     Permission = "用户浏览器操作",
                     RequiresElevation = false,
                     Reason = item.Status,
-                    OfficialUrl = package == null ? String.Empty : package.OfficialUrl
+                    OfficialUrl = sourceUrl,
+                    SourcePolicy = String.IsNullOrEmpty(item.RepairSourcePolicy) ? "official-source-review-only" : item.RepairSourcePolicy,
+                    RepairSupported = repairSupported,
+                    RepairAction = String.IsNullOrEmpty(item.RepairAction) ? "manual-review" : item.RepairAction
                 });
             }
             return plan;

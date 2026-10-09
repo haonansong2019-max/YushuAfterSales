@@ -83,6 +83,12 @@ namespace YushuAfterSales.Reporting
         public string Status { get; set; }
         public string EvidenceId { get; set; }
         public string Details { get; set; }
+        /// <summary>Whether this entry has a product-controlled repair route. A false value is fail-closed.</summary>
+        public bool RepairSupported { get; set; }
+        /// <summary>Allowed source policy for a repair route (for example official-microsoft-only).</summary>
+        public string RepairSourcePolicy { get; set; }
+        /// <summary>Stable action name used by the repair preview and structured report.</summary>
+        public string RepairAction { get; set; }
     }
 
     public sealed class FindingRecord
@@ -119,6 +125,8 @@ namespace YushuAfterSales.Reporting
         public string Result { get; set; }
         public string CommandSummary { get; set; }
         public List<string> EvidenceIds { get; set; }
+        public string SourcePolicy { get; set; }
+        public bool? AutomaticExecutionAllowed { get; set; }
 
         public ActionRecord()
         {

@@ -81,3 +81,11 @@
 - VPS 凭据只存在于用户文档，不复制到源码、报告、命令输出或日志；仅能在目标主机与 ysrepair 独立路由明确后核验部署契约。稳定升级清单和发行物仍须用户明确“定稿并推送”。
 - WinGet 上游清单不是本产品固定的下载哈希/发布者策略；在线稳定前，自动安装暂时关闭，保留只读检测和用户主动打开的官方来源。
 - 授权回执须带 request_id 并以固定公钥验证 RSA-SHA256；公钥不能取自同一份可编辑配置。当前没有已部署服务公钥，因此在线授权继续 fail-closed。
+
+## 2026-10-09 核心三模块补充
+
+- 运行库页：扫描后展示 VC++/.NET 检测结果和 VC++ 官方目录项，支持逐项勾选、架构、状态和 evidenceId；主操作先生成修复预览，不自动下载安装。
+- DirectX 页：除平台注册表版本外，逐项检查 June 2010 常见 D3DX/XInput/XAudio/XAPOFX/X3DAudio 文件，并显示 x86/x64、状态、官方 Microsoft 来源和 evidenceId。
+- DLL 页：新增独立导航和逐项清单，默认覆盖常见 XInput/D3DX/D3DCompiler/MSVC/UCRT DLL；只读、非递归、拒绝路径穿越，记录版本与 SHA-256；禁止从未知 DLL 网站下载或覆盖。
+- 修复计划增加来源策略、RepairSupported 和 RepairAction 字段；当前默认 fail-closed，仅生成预览或打开官方来源，真实安装仍需受信哈希/签名清单和有效 ysrepair 授权。
+- 本轮验证：主程序 Release 构建 0 errors；SelfTest `YUSHU_AFTER_SALES_SELFTEST=PASS`；AuthorizationSelfTest `AUTHORIZATION_SELFTEST=PASS`（19 项）；EXE 启动后清洁退出；本地便携包 `artifacts/YushuAfterSales-portable-20261009-180301.zip`，SHA-256 `FFDF7496A45478BDED160A0A572043B12B5F232FD5C59FD623851B4EC01360C5`；EXE SHA-256 `343623D5C77233C01E3CB731DFD35BD953127BCAD3CE46A860B69E004FC4D60D`。

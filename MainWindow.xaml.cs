@@ -20,6 +20,7 @@ namespace YushuAfterSales
             { "overview", "全面扫描" },
             { "runtime", "运行库修复" },
             { "directx", "DirectX 修复" },
+            { "dll", "DLL 修复" },
             { "system", "系统修复" },
             { "components", "游戏组件" },
             { "reports", "诊断报告" },
@@ -73,15 +74,16 @@ namespace YushuAfterSales
             ExportReportButton.Visibility = key == "overview" && _currentReport != null ? Visibility.Visible : Visibility.Collapsed;
             ExportModuleReportButton.Visibility = (key == "reports" && _reportHistory.Count > 0) || (key != "overview" && key != "reports" && _currentReport != null) ? Visibility.Visible : Visibility.Collapsed;
             OpenReportFolderButton.Visibility = key == "reports" ? Visibility.Visible : Visibility.Collapsed;
-            OpenSourceListButton.Visibility = key == "runtime" || key == "directx" || key == "components" ? Visibility.Visible : Visibility.Collapsed;
-            ModulePrimaryButton.Visibility = key == "runtime" || key == "directx" || key == "system" || key == "license" || key == "updates" || key == "reports" ? Visibility.Visible : Visibility.Collapsed;
-            ModulePrimaryButton.Content = key == "runtime" || key == "directx" ? Localize("打开选中项官方来源", "Open selected official source") : key == "system" ? Localize("执行所选系统修复", "Run selected system repair") : key == "license" ? Localize("在线刷新授权", "Refresh license online") : Localize("检查并下载更新", "Check and download update");
+            OpenSourceListButton.Visibility = key == "runtime" || key == "directx" || key == "dll" || key == "components" ? Visibility.Visible : Visibility.Collapsed;
+            ModuleSelectButton.Visibility = key == "runtime" || key == "directx" || key == "dll" ? Visibility.Visible : Visibility.Collapsed;
+            ModulePrimaryButton.Visibility = key == "runtime" || key == "directx" || key == "dll" || key == "system" || key == "license" || key == "updates" || key == "reports" ? Visibility.Visible : Visibility.Collapsed;
+            ModulePrimaryButton.Content = key == "runtime" || key == "directx" || key == "dll" ? Localize("预览所选修复", "Preview selected repair") : key == "system" ? Localize("执行所选系统修复", "Run selected system repair") : key == "license" ? Localize("在线刷新授权", "Refresh license online") : Localize("检查并下载更新", "Check and download update");
             if (key == "reports") ModulePrimaryButton.Content = Localize("导出所选报告", "Export selected report");
-            ModulePrimaryButton.IsEnabled = key == "runtime" || key == "directx" || key == "license" || key == "updates" || (key == "system" && _authorization != null && _authorization.CanRepair);
+            ModulePrimaryButton.IsEnabled = key == "runtime" || key == "directx" || key == "dll" || key == "license" || key == "updates" || (key == "system" && _authorization != null && _authorization.CanRepair);
             if (key == "reports") ModulePrimaryButton.IsEnabled = _reportHistory.Count > 0;
             if (key == "license" && (_authorization == null || !_authorization.CanRepair)) ModulePrimaryButton.Content = Localize("刷新授权状态", "Refresh license status");
             if (key == "system" && _systemActionRunning) ModulePrimaryButton.IsEnabled = false;
-            ModulePrimaryButton.ToolTip = key == "runtime" || key == "directx" ? Localize("自动安装暂不可用；只打开选中项目的官方来源，不会替你安装。", "Automatic installation is unavailable. This only opens the selected vendor source.") : null;
+            ModulePrimaryButton.ToolTip = key == "runtime" || key == "directx" || key == "dll" ? Localize("先查看修复预览；当前版本不会直接覆盖未知 DLL。", "Review the repair preview first; this build never overwrites unknown DLLs directly.") : null;
             foreach (ComboBoxItem item in SystemActionCombo.Items)
             {
                 if (item.Content != null && item.Content.ToString().Contains(".NET"))
@@ -96,6 +98,7 @@ namespace YushuAfterSales
                 PlaceholderStatus.Text = GetStatusText(key);
                 ModuleEvidence.Text = GetEvidenceText(key);
                 ModuleGrid.ItemsSource = GetModuleItems(key);
+                UpdateSelectionSummary();
             }
             AuthorizationActivationPanel.Visibility = key == "license" ? Visibility.Visible : Visibility.Collapsed;
         }
@@ -118,7 +121,7 @@ namespace YushuAfterSales
         private string GetEvidenceText(string key)
         {
             if (_currentReport == null) return Localize("扫描后这里会显示可追溯的证据 ID 和状态。", "Traceable evidence IDs and status will appear here after a scan.");
-            if (key == "runtime" || key == "directx")
+            if (key == "runtime" || key == "directx" || key == "dll")
             {
                 int missing = _currentReport.Inventory.Count(x => x.Status == "missing" || x.Status == "missing-or-unknown" || x.Status == "unknown");
                 return Localize("证据：", "Evidence: ") + _currentReport.ReportId + Localize("；待复核项目：", "; items to review: ") + missing + Localize("；来源和哈希会在安装前再次校验。", "; sources and hashes are checked again before installation.");
@@ -132,6 +135,7 @@ namespace YushuAfterSales
             {
                 case "runtime": return Localize("查看本机运行库证据，选择项目后可打开厂商官方来源；自动安装在配置受信安装策略前关闭。", "Review runtime evidence and open vendor sources. Automatic installation stays disabled until a trusted install policy is configured.");
                 case "directx": return Localize("查看 DirectX legacy 组件证据并打开 Microsoft 官方来源；不替换 Windows DirectX 系统版本。", "Review legacy DirectX evidence and open Microsoft sources. Windows system DirectX is not replaced.");
+                case "dll": return Localize("按明确的 DLL 名称检查目标程序目录和系统组件证据；只把缺失项映射到受信官方组件，禁止从随机 DLL 网站下载或覆盖文件。", "Check explicit DLL evidence in the target and system component locations; map confirmed issues to trusted vendor packages only. Random DLL downloads and file replacement are prohibited.");
                 case "system": return Localize("通过 UAC 调用 SFC、DISM 或 Windows .NET 3.5 可选功能；执行前尝试创建还原点。", "Run SFC, DISM, or the Windows .NET 3.5 feature through UAC. A restore point is attempted first.");
                 case "components": return Localize("OpenAL、MSXML、Java 与游戏平台只显示官方来源和兼容性信息。", "OpenAL, MSXML, Java, and game platforms show official sources and compatibility information only.");
                 case "reports": return Localize("浏览本机保存的扫描历史；导出时生成脱敏 JSON、动作记录、日志索引和 SHA-256 清单。", "Browse local scan history. Exports include redacted JSON, action records, a log index, and SHA-256 manifest.");
@@ -302,7 +306,11 @@ namespace YushuAfterSales
                 await CheckForUpdatesAsync();
                 return;
             }
-            if (_currentPageKey == "runtime" || _currentPageKey == "directx") { OpenOfficialButton_Click(sender, e); return; }
+            if (_currentPageKey == "runtime" || _currentPageKey == "directx" || _currentPageKey == "dll")
+            {
+                ShowRepairPreview();
+                return;
+            }
             if (_currentReport == null)
             {
                 MessageBox.Show(Localize("请先执行只读扫描。", "Run a read-only scan first."), "Yushu Support", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -528,6 +536,57 @@ namespace YushuAfterSales
             catch (Exception ex) { MessageBox.Show(Localize("无法打开官方来源：", "Could not open official source: ") + SensitiveDataRedactor.Redact(ex.Message), Localize("官方来源", "Official source"), MessageBoxButton.OK, MessageBoxImage.Error); }
         }
 
+        private void ModuleSelectButton_Click(object sender, RoutedEventArgs e)
+        {
+            bool allSelected = GetVisibleModuleRows().Where(x => x.IsRepairCandidate).All(x => x.IsSelected);
+            foreach (InventoryRow row in GetVisibleModuleRows())
+                if (row.IsRepairCandidate) row.IsSelected = !allSelected;
+            UpdateSelectionSummary();
+        }
+
+        private void SelectionCheckBox_Click(object sender, RoutedEventArgs e)
+        {
+            UpdateSelectionSummary();
+        }
+
+        private IEnumerable<InventoryRow> GetVisibleModuleRows()
+        {
+            return ModuleGrid.ItemsSource as IEnumerable<InventoryRow> ?? Enumerable.Empty<InventoryRow>();
+        }
+
+        private void UpdateSelectionSummary()
+        {
+            if (SelectionSummary == null) return;
+            List<InventoryRow> rows = GetVisibleModuleRows().ToList();
+            int candidates = rows.Count(x => x.IsRepairCandidate);
+            int selected = rows.Count(x => x.IsSelected);
+            ModuleSelectButton.Content = candidates > 0 && selected == candidates
+                ? Localize("取消全选", "Clear selection")
+                : Localize("全选待复核", "Select review items");
+            SelectionSummary.Text = _currentPageKey == "runtime" || _currentPageKey == "directx" || _currentPageKey == "dll"
+                ? Localize("待复核项目：" + candidates + "；已选择：" + selected + "。执行前仅生成预览，不会直接覆盖文件。", "Review candidates: " + candidates + "; selected: " + selected + ". The next step only creates a preview and never overwrites files directly.")
+                : String.Empty;
+        }
+
+        private void ShowRepairPreview()
+        {
+            List<InventoryRow> selected = GetVisibleModuleRows().Where(x => x.IsSelected).ToList();
+            if (selected.Count == 0)
+            {
+                MessageBox.Show(Localize("请先勾选需要复核的项目。", "Select at least one item first."), Localize("修复预览", "Repair preview"), MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            string authorization = _authorization == null ? "unknown" : _authorization.State;
+            string mode = _authorization != null && _authorization.CanRepair ? Localize("已授权；仍需单独确认并校验官方包。", "Authorized; explicit confirmation and official package verification are still required.") : Localize("未授权；仅允许查看报告和官方来源。", "Not authorized; only reports and official sources are available.");
+            string body = Localize("将要预览的项目：", "Items in preview: ") + Environment.NewLine +
+                String.Join(Environment.NewLine, selected.Select(x => "• " + x.DisplayName + " [" + x.Architecture + "] - " + x.StatusLabel + " - " + (String.IsNullOrEmpty(x.SourceUrl) ? Localize("无官方来源", "no official source") : x.SourceUrl))) +
+                Environment.NewLine + Environment.NewLine + Localize("授权状态：", "License: ") + authorization + "。" + mode + Environment.NewLine +
+                Localize("目标：只使用可校验的微软/厂商官方安装包；DLL 不从未知来源下载或覆盖。", "Policy: use only verifiable Microsoft/vendor packages; never download or overwrite DLLs from unknown sources.");
+            MessageBox.Show(body, Localize("修复预览", "Repair preview"), MessageBoxButton.OK, MessageBoxImage.Information);
+            ToolbarStatus.Text = Localize("已生成修复预览", "Repair preview created");
+        }
+
         private void OpenReportFolderButton_Click(object sender, RoutedEventArgs e)
         {
             string root = ReportHistoryStore.Root();
@@ -547,8 +606,28 @@ namespace YushuAfterSales
                 return _reportHistory.Select(x => new InventoryEntry { ComponentId = x.ReportId, DisplayName = Localize("诊断报告 ", "Diagnostic report ") + x.ReportId, DetectedVersion = x.CreatedUtc, ExpectedVersion = Localize("发现 ", "") + (x.Findings == null ? 0 : x.Findings.Count) + Localize(" 项", " findings"), Status = "local-history", EvidenceId = "report-" + x.ReportId }).Take(100).Select(ToInventoryRow).ToList();
             if (_currentReport == null) return new List<InventoryRow>();
             IEnumerable<InventoryEntry> items = _currentReport.Inventory;
-            if (key == "runtime") items = items.Where(x => x.Category == "vc-runtime" || x.Category == "dotnet");
-            else if (key == "directx") items = items.Where(x => x.Category == "directx");
+            if (key == "runtime")
+            {
+                List<InventoryEntry> detected = items.Where(x => x.Category == "vc-runtime" || x.Category == "dotnet").ToList();
+                IEnumerable<InventoryEntry> catalog = RuntimeCatalog.Packages
+                    .Where(x => x.Category == "VC++" && x.Id != "vc-2015plus-x86" && x.Id != "vc-2015plus-x64")
+                    .Select(x => new InventoryEntry
+                    {
+                        ComponentId = x.Id,
+                        Category = "catalog-only",
+                        DisplayName = x.DisplayName,
+                        Architecture = x.Architecture,
+                        ExpectedVersion = x.Notes,
+                        SourceUrl = x.OfficialUrl,
+                        Compatibility = x.SupportsWindows7 ? "Windows 7/10/11" : "Windows 10/11 only",
+                        Status = "catalog-only",
+                        EvidenceId = "catalog-" + x.Id,
+                        Details = "官方来源目录；尚未针对具体目标程序确认是否需要。"
+                    });
+                items = detected.Concat(catalog);
+            }
+            else if (key == "directx") items = items.Where(x => x.Category == "directx" || x.Category == "directx-legacy-file");
+            else if (key == "dll") items = items.Where(x => x.Category == "dll");
             else if (key == "components") items = RuntimeCatalog.Packages.Where(x => x.Category == "游戏组件" || x.Category == "游戏平台").Select(x => new InventoryEntry { ComponentId = x.Id, DisplayName = x.DisplayName, ExpectedVersion = x.Notes, SourceUrl = x.OfficialUrl, Compatibility = x.SupportsWindows7 ? "Windows 7/10/11" : "Windows 10/11 only", Status = "catalog-only", EvidenceId = "catalog-" + x.Id });
             return items.Select(ToInventoryRow).ToList();
         }
@@ -556,7 +635,8 @@ namespace YushuAfterSales
         private InventoryRow ToInventoryRow(InventoryEntry item)
         {
             string status = item.Status == "installed" ? Localize("已安装", "Installed") : item.Status == "missing" || item.Status == "missing-or-unknown" || item.Status == "unknown" ? Localize("需复核", "Needs review") : item.Status == "catalog-only" ? Localize("仅官方目录", "Official catalog only") : item.Status == "local-history" ? Localize("本地历史", "Local history") : item.Status;
-            return new InventoryRow { ComponentId = item.ComponentId, SourceUrl = item.SourceUrl, DisplayName = item.DisplayName, DetectedVersion = item.DetectedVersion, StatusLabel = status, Compatibility = item.Compatibility, SourceLabel = String.IsNullOrEmpty(item.SourceUrl) ? Localize("本机证据", "Local evidence") : Localize("官方来源", "Official source"), EvidenceId = item.EvidenceId };
+            bool candidate = item.Status == "missing" || item.Status == "missing-or-unknown" || item.Status == "unknown" || item.Status == "outdated";
+            return new InventoryRow { ComponentId = item.ComponentId, SourceUrl = item.SourceUrl, DisplayName = item.DisplayName, Architecture = item.Architecture, DetectedVersion = item.DetectedVersion, ExpectedVersion = item.ExpectedVersion, StatusLabel = status, Compatibility = item.Compatibility, SourceLabel = String.IsNullOrEmpty(item.SourceUrl) ? Localize("本机证据", "Local evidence") : Localize("官方来源", "Official source"), EvidenceId = item.EvidenceId, IsRepairCandidate = candidate, IsSelected = false };
         }
 
         private sealed class InventoryRow
@@ -564,11 +644,15 @@ namespace YushuAfterSales
             public string ComponentId { get; set; }
             public string SourceUrl { get; set; }
             public string DisplayName { get; set; }
+            public string Architecture { get; set; }
             public string DetectedVersion { get; set; }
+            public string ExpectedVersion { get; set; }
             public string StatusLabel { get; set; }
             public string Compatibility { get; set; }
             public string SourceLabel { get; set; }
             public string EvidenceId { get; set; }
+            public bool IsRepairCandidate { get; set; }
+            public bool IsSelected { get; set; }
         }
 
         private void ApplyTheme(string theme)
@@ -631,6 +715,8 @@ namespace YushuAfterSales
             OpenSourceListButton.Content = _isEnglish ? "Open selected official source" : "打开选中项官方来源";
             ExportModuleReportButton.Content = _isEnglish ? "Export diagnostic ZIP" : "导出诊断 ZIP";
             OpenReportFolderButton.Content = _isEnglish ? "Open report folder" : "打开报告目录";
+            ModuleSelectButton.Content = _isEnglish ? "Select review items" : "全选待复核";
+            SelectionSummary.Text = _isEnglish ? "Select review candidates; a preview is shown before any repair." : "可选择待复核项目；修复前会显示预览。";
             OverviewHeaderEvidence.Text = _isEnglish ? "Component / evidence" : "组件 / 证据";
             OverviewHeaderVersion.Text = _isEnglish ? "Version" : "版本";
             OverviewHeaderStatus.Text = _isEnglish ? "Status" : "状态";
@@ -641,13 +727,15 @@ namespace YushuAfterSales
             AuthorizationCodeBox.ToolTip = _isEnglish ? "Enter license code" : "输入授权卡密";
             AuthorizationCodeBox.SetValue(System.Windows.Automation.AutomationProperties.NameProperty, _isEnglish ? "License code" : "授权卡密");
             SystemActionCombo.ToolTip = _isEnglish ? "Choose a Windows repair action" : "选择 Windows 修复操作";
-            if (ModuleGrid.Columns.Count >= 5)
+            if (ModuleGrid.Columns.Count >= 7)
             {
-                ModuleGrid.Columns[0].Header = _isEnglish ? "Component" : "组件";
-                ModuleGrid.Columns[1].Header = _isEnglish ? "Current version" : "当前版本";
-                ModuleGrid.Columns[2].Header = _isEnglish ? "Target version" : "目标版本";
-                ModuleGrid.Columns[3].Header = _isEnglish ? "Status" : "状态";
-                ModuleGrid.Columns[4].Header = _isEnglish ? "Evidence ID" : "证据 ID";
+                ModuleGrid.Columns[0].Header = _isEnglish ? "Select" : "选择";
+                ModuleGrid.Columns[1].Header = _isEnglish ? "Component" : "组件";
+                ModuleGrid.Columns[2].Header = _isEnglish ? "Arch" : "架构";
+                ModuleGrid.Columns[3].Header = _isEnglish ? "Current version" : "当前版本";
+                ModuleGrid.Columns[4].Header = _isEnglish ? "Target version" : "目标版本";
+                ModuleGrid.Columns[5].Header = _isEnglish ? "Status" : "状态";
+                ModuleGrid.Columns[6].Header = _isEnglish ? "Evidence ID" : "证据 ID";
             }
             foreach (Button button in FindVisualChildren<Button>(ThemeMenu))
             {
@@ -671,6 +759,7 @@ namespace YushuAfterSales
                 if (key == "overview") label.Text = _isEnglish ? "Full scan" : "全面扫描";
                 else if (key == "runtime") label.Text = _isEnglish ? "Runtime repair" : "运行库修复";
                 else if (key == "directx") label.Text = _isEnglish ? "DirectX repair" : "DirectX 修复";
+                else if (key == "dll") label.Text = _isEnglish ? "DLL repair" : "DLL 修复";
                 else if (key == "system") label.Text = _isEnglish ? "System repair" : "系统修复";
                 else if (key == "components") label.Text = _isEnglish ? "Game components" : "游戏组件";
                 else if (key == "reports") label.Text = _isEnglish ? "Diagnostic reports" : "诊断报告";
@@ -696,6 +785,7 @@ namespace YushuAfterSales
                 case "overview": return "Full scan";
                 case "runtime": return "Runtime repair";
                 case "directx": return "DirectX repair";
+                case "dll": return "DLL repair";
                 case "system": return "System repair";
                 case "components": return "Game components";
                 case "reports": return "Diagnostic reports";

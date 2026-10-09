@@ -27,6 +27,14 @@ namespace YushuAfterSales.Reporting
             Require(ReportBuilder.ClassifyDotNet35Status(true, true, null) == "unknown", ".NET 3.5 missing Install value is unknown");
             List<InventoryEntry> inventory = ReportBuilder.CollectInventory();
             Require(inventory.Single(x => x.ComponentId == "directx-legacy").Status == "unknown", "DirectX registry is not reported as June 2010 runtime presence");
+            Require(inventory.Any(x => x.Category == "directx-legacy-file" && x.DisplayName == "D3DX9_43.dll"), "DirectX legacy DLL evidence is collected separately from platform version");
+            Require(inventory.Any(x => x.Category == "dll" && x.DisplayName == "VCRUNTIME140.dll"), "common DLL evidence is present for the DLL repair page");
+            List<InventoryEntry> dllEvidence = ReportBuilder.CollectDllEvidence(new[] { "VCRUNTIME140.dll" }, null, "x64");
+            Require(dllEvidence.Count == 1 && dllEvidence[0].Category == "dll" && dllEvidence[0].EvidenceId.Contains("vcruntime140"), "DLL evidence has stable category and evidence ID");
+            bool dllPathRejected = false;
+            try { ReportBuilder.CollectDllEvidence(new[] { "..\\secret.dll" }, null, "x64"); }
+            catch (ArgumentException) { dllPathRejected = true; }
+            Require(dllPathRejected, "DLL probe rejects path traversal and only accepts basenames");
             Require(inventory.Where(x => x.ComponentId.StartsWith("vc-runtime-2015-2022-", StringComparison.Ordinal)).All(x => x.Status == "installed" || x.Status == "unknown"), "VC v14 absence remains unknown without positive evidence");
             Require(inventory.Where(x => x.ComponentId == "dotnet-framework-4-full" || x.ComponentId == "dotnet-framework-3-5").All(x => x.Status == "installed" || x.Status == "outdated" || x.Status == "missing" || x.Status == "unknown"), ".NET inventory uses explicit evidence states");
 
