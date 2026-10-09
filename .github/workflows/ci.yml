@@ -1,0 +1,73 @@
+name: Windows CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore SelfTest and application
+        run: dotnet restore SelfTest/SelfTest.csproj
+
+      - name: Restore authorization self-test
+        run: dotnet restore SelfTest/Authorization/AuthorizationSelfTest.csproj
+
+      - name: Build WPF application (Release)
+        run: dotnet build YushuAfterSales.csproj --configuration Release --no-restore
+
+      - name: Build SelfTest (Release)
+        run: dotnet build SelfTest/SelfTest.csproj --configuration Release --no-restore
+
+      - name: Run SelfTest
+        shell: pwsh
+        run: |
+          $selfTest = Join-Path $env:GITHUB_WORKSPACE 'SelfTest/bin/Release/net48/SelfTest.exe'
+          if (-not (Test-Path -LiteralPath $selfTest -PathType Leaf)) {
+            throw "SelfTest executable was not produced: $selfTest"
+          }
+          & $selfTest
+          if ($LASTEXITCODE -ne 0) {
+            throw "SelfTest failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Build authorization self-test (Release)
+        run: dotnet build SelfTest/Authorization/AuthorizationSelfTest.csproj --configuration Release --no-restore
+
+      - name: Run authorization self-test
+        shell: pwsh
+        run: |
+          $selfTest = Join-Path $env:GITHUB_WORKSPACE 'SelfTest/Authorization/bin/Release/net48/AuthorizationSelfTest.exe'
+          if (-not (Test-Path -LiteralPath $selfTest -PathType Leaf)) {
+            throw "Authorization self-test executable was not produced: $selfTest"
+          }
+          & $selfTest
+          if ($LASTEXITCODE -ne 0) {
+            throw "Authorization self-test failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Create portable package
+        shell: pwsh
+        run: ./scripts/package-release.ps1
+
+      - name: Upload portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: YushuAfterSales-portable
+          path: artifacts/YushuAfterSales-portable.zip
+          if-no-files-found: error
+          retention-days: 30

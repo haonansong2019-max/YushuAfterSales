@@ -1,0 +1,25 @@
+<Window x:Class="YushuAfterSales.ErrorDiagnosisWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="错误码诊断" Width="560" Height="300" MinWidth="480" MinHeight="260"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
+        Background="{DynamicResource BackgroundBrush}" Foreground="{DynamicResource TextBrush}"
+        FontFamily="{DynamicResource FontPrimary}">
+  <Grid Margin="24">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <TextBlock Text="记录错误码与目标程序" FontSize="18" FontWeight="SemiBold" />
+    <TextBlock Grid.Row="1" Text="只读取文件版本与 SHA-256，不会启动 EXE，也不会修改目标文件。" FontSize="13" Foreground="{DynamicResource TextMutedBrush}" Margin="0,6,0,16" />
+    <TextBlock Grid.Row="2" Text="错误码" FontSize="13" FontWeight="Medium" />
+    <TextBox x:Name="ErrorCodeBox" Grid.Row="3" Height="32" VerticalAlignment="Top" FontSize="14" Padding="8,4" />
+    <StackPanel Grid.Row="4">
+      <DockPanel Margin="0,0,0,16">
+        <Button Content="选择 EXE" Width="88" Height="30" DockPanel.Dock="Right" Click="BrowseButton_Click" />
+        <TextBox x:Name="TargetPathBox" IsReadOnly="True" Height="30" FontSize="13" Padding="8,4" />
+      </DockPanel>
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+        <Button Content="取消" Width="80" Height="32" Margin="0,0,8,0" IsCancel="True" />
+        <Button Content="加入诊断报告" Width="120" Height="32" Style="{DynamicResource PrimaryButtonStyle}" IsDefault="True" Click="AcceptButton_Click" />
+      </StackPanel>
+    </StackPanel>
+  </Grid>
+</Window>
